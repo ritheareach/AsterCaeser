@@ -40451,3 +40451,212 @@ body.theme-frosted .modal {
   .compare-grid[data-cols] { grid-template-columns: 1fr !important; overflow-y: auto; }
   .compare-pane { min-height: 60dvh; }
 }
+
+/* ── Workspace / Project Manager ── */
+
+#projects-section .section-header-flex {
+  cursor: default;
+}
+
+.project-selector {
+  position: relative;
+  margin: 2px 8px 6px;
+  font-size: 11px;
+}
+
+.project-selector-current {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.project-selector-current:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.project-sel-icon {
+  display: flex;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.project-sel-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.project-sel-chevron {
+  flex-shrink: 0;
+  opacity: 0.4;
+  transition: transform 0.2s;
+}
+
+.project-selector-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  margin-top: 2px;
+}
+
+.project-sel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.project-sel-item:hover {
+  background: color-mix(in srgb, var(--accent, var(--red)) 12%, transparent);
+}
+
+.project-sel-item.active {
+  background: color-mix(in srgb, var(--accent, var(--red)) 18%, transparent);
+  color: var(--accent, var(--red));
+}
+
+.project-sel-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.project-sel-item-icon { display: flex; opacity: 0.6; flex-shrink: 0; }
+.project-sel-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.workspace-main-content {
+  overflow-y: auto;
+  max-height: calc(100dvh - 300px);
+  padding: 0 8px;
+}
+
+.workspace-header h3 {
+  font-size: 11px;
+  font-weight: 600;
+  margin: 8px 0 6px;
+  color: var(--fg);
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.workspace-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.workspace-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-card-icon { display: flex; opacity: 0.6; }
+.workspace-card-name { flex: 1; font-weight: 600; font-size: 11px; }
+.workspace-card-count { font-size: 10px; opacity: 0.5; }
+
+.workspace-project-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.workspace-project-row:last-child { border-bottom: none; }
+.workspace-project-row:hover { background: color-mix(in srgb, var(--accent, var(--red)) 8%, transparent); }
+.workspace-project-icon { display: flex; opacity: 0.5; flex-shrink: 0; }
+.workspace-project-name { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-project-path { font-size: 9px; opacity: 0.4; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-project-count { font-size: 9px; opacity: 0.4; flex-shrink: 0; }
+
+.workspace-empty-sm {
+  padding: 10px;
+  text-align: center;
+  font-size: 10px;
+  opacity: 0.4;
+}
+
+.workspace-actions {
+  display: flex;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.workspace-action-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.workspace-action-btn:hover {
+  background: color-mix(in srgb, var(--accent, var(--red)) 8%, transparent);
+  border-color: var(--accent, var(--red));
+}
+
+/* Project detail view (main content area) */
+.project-detail { padding: 0; }
+.project-detail-header { display: flex; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
+.project-detail-header h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.project-detail-path { font-size: 11px; opacity: 0.4; margin-left: auto; }
+.project-back-btn { background: none; border: none; color: var(--fg); cursor: pointer; padding: 4px 8px; border-radius: 4px; font-size: 12px; transition: background 0.1s; }
+.project-back-btn:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+
+.project-detail-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+.project-tab { padding: 8px 14px; background: none; border: none; color: var(--fg); font-size: 11px; cursor: pointer; opacity: 0.5; border-bottom: 2px solid transparent; transition: opacity 0.15s, border-color 0.15s; }
+.project-tab:hover { opacity: 0.8; }
+.project-tab.active { opacity: 1; border-bottom-color: var(--accent, var(--red)); }
+
+.project-detail-body { padding: 12px; }
+.project-tab-content { min-height: 100px; }
+.project-tab-placeholder { text-align: center; padding: 40px 0; opacity: 0.3; font-size: 12px; }
+
+.project-overview-grid { display: flex; gap: 10px; margin-bottom: 16px; }
+.project-stat-card { flex: 1; text-align: center; padding: 16px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+.project-stat-value { font-size: 22px; font-weight: 700; color: var(--accent, var(--red)); }
+.project-stat-label { font-size: 10px; opacity: 0.5; margin-top: 2px; }
+
+.project-quick-actions { display: flex; gap: 8px; }
+.project-action-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); font-size: 12px; cursor: pointer; transition: background 0.1s, border-color 0.1s; }
+.project-action-btn:hover { background: color-mix(in srgb, var(--accent, var(--red)) 10%, transparent); border-color: var(--accent, var(--red)); }
+
+.project-setting-row { margin-bottom: 12px; }
+.project-setting-row label { display: block; font-size: 11px; opacity: 0.6; margin-bottom: 4px; }
+.project-setting-row input { width: 100%; }
+.project-setting-actions { display: flex; gap: 8px; margin-top: 16px; }
