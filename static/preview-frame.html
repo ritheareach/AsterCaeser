@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><meta name="darkreader-lock"><title>Typst Preview</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#fff;color:#000}
+@media(prefers-color-scheme:dark){body{background:#1a1a2e;color:#e0e0e0}}
+#pages{display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 0}
+#pages img{display:block;max-width:100%;height:auto;cursor:pointer}
+#pages img:hover{box-shadow:0 0 0 2px rgba(100,100,255,0.4)}
+#status{position:fixed;top:8px;right:8px;font:11px sans-serif;color:#888;background:rgba(255,255,255,0.8);padding:2px 8px;border-radius:3px}
+@media(prefers-color-scheme:dark){#status{color:#aaa;background:rgba(0,0,0,0.6)}}
+</style></head>
+<body><div id="status">connecting…</div><div id="pages"></div>
+<script>
+(function(){'use strict';const TYPE='odysseus-preview-frame-v2';const pages=document.getElementById('pages');const status=document.getElementById('status');
+function send(msg){try{parent.postMessage({type:TYPE,...msg},window.location.origin)}catch(_){}}
+function setStatus(text){status.textContent=text}
+send({state:'ready'});setStatus('idle');
+window.addEventListener('message',function(event){if(event.origin!==window.location.origin)return;var data=event.data;if(!data||data.type!==TYPE)return;
+switch(data.action){case'render':setStatus(data.pageCount?data.pageCount+' pages':'rendered');pages.innerHTML='';if(data.pages&&data.pages.length){for(var i=0;i<data.pages.length;i++){var img=document.createElement('img');img.src=data.pages[i];img.alt='Page '+(i+1);img.draggable=false;img.addEventListener('click',(function(pageIndex){return function(e){var rect=img.getBoundingClientRect();var x=(e.clientX-rect.left)/rect.width;var y=(e.clientY-rect.top)/rect.height;send({state:'click',page:pageIndex,x:x,y:y,clientX:e.clientX,clientY:e.clientY})}})(i));pages.appendChild(img)}}break;case'error':setStatus('error');pages.innerHTML='<div style="padding:20px;color:red;font:14px sans-serif">'+escapeHtml(data.message||'Compile error')+'</div>';break;case'clear':pages.innerHTML='';setStatus('idle');break}});
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,function(m){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]})}
+send({state:'alive'})})();
+</script></body></html>

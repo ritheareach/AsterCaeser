@@ -1,0 +1,69 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Aster — dark cyan terminal theme
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --aster-cyan: #00e5bf;
+  --aster-cyan-dim: #00997a;
+  --aster-bg: #0a0e0d;
+  --aster-surface: #111716;
+  --aster-border: #1a2421;
+  --aster-text: #cce8e0;
+  --aster-dim: #6b8a82;
+  --aster-glow: rgba(0,229,191,0.06);
+  --aster-hairline: rgba(0,229,191,0.18);
+  --aster-mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+html.aster-chrome { background: var(--aster-bg) !important; }
+html.aster-chrome body { background: var(--aster-bg); color: var(--aster-text); }
+html.aster-chrome .app-body, html.aster-chrome #app, html.aster-chrome .chat-pane, html.aster-chrome .editor-pane { background: var(--aster-bg); color: var(--aster-text); }
+html.aster-chrome .panel, html.aster-chrome .card, html.aster-chrome .section { background: var(--aster-surface); border-color: var(--aster-border); color: var(--aster-text); }
+html.aster-chrome input, html.aster-chrome textarea, html.aster-chrome select { background: #060a09; border: 1px solid var(--aster-border); color: var(--aster-text); font-family: var(--aster-mono); font-size: 12px; }
+html.aster-chrome input:focus, html.aster-chrome textarea:focus { border-color: var(--aster-cyan); outline: none; box-shadow: 0 0 0 1px var(--aster-cyan-dim); }
+html.aster-chrome button { background: var(--aster-surface); border: 1px solid var(--aster-border); color: var(--aster-cyan); font-family: var(--aster-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer; }
+html.aster-chrome button:hover { border-color: var(--aster-cyan-dim); box-shadow: 0 0 12px var(--aster-glow); }
+html.aster-chrome a { color: var(--aster-cyan); text-decoration: none; }
+html.aster-chrome a:hover { text-decoration: underline; text-underline-offset: 3px; }
+html.aster-chrome ::selection { background: var(--aster-cyan); color: var(--aster-bg); }
+html.aster-chrome ::-webkit-scrollbar { width: 7px; height: 7px; }
+html.aster-chrome ::-webkit-scrollbar-track { background: transparent; }
+html.aster-chrome ::-webkit-scrollbar-thumb { background: var(--aster-border); border-radius: 4px; }
+html.aster-chrome ::-webkit-scrollbar-thumb:hover { background: var(--aster-cyan-dim); }
+#editor-container .ed-preview-head { background: var(--aster-surface); border-bottom: 1px solid var(--aster-border); }
+#editor-container .ed-preview-label { color: var(--aster-cyan); font-family: var(--aster-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; }
+#editor-container .ed-preview-body { background: var(--aster-bg); }
+#editor-container .ed-preview-page-wrap { position: relative; margin: 0 auto 14px; }
+#editor-container .ed-preview-page { display: block; width: 100%; height: auto; background: #fff; border: 1px solid var(--aster-border); box-shadow: 0 2px 16px rgba(0,0,0,0.5), 0 0 40px var(--aster-glow); }
+#editor-container .ed-preview-overlay { position: absolute; inset: 0; cursor: pointer; z-index: 1; }
+#editor-container .ed-preview-overlay:hover { background: rgba(0,229,191,0.03); }
+#editor-container .ed-preview-error { padding: 24px; color: #ff5c5c; font-family: var(--aster-mono); }
+#editor-container .ed-preview-error-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; color: #ff5c5c; }
+#editor-container .ed-preview-diags { list-style: none; padding: 0; margin: 0; font-size: 11px; }
+#editor-container .ed-preview-diags li { padding: 2px 0; color: var(--aster-text); }
+#editor-container .ed-diag-pos { color: var(--aster-dim); }
+#editor-container .ed-preview-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--aster-mono); }
+#editor-container .ed-preview-table th, #editor-container .ed-preview-table td { border: 1px solid var(--aster-border); padding: 4px 8px; text-align: left; }
+#editor-container .ed-preview-rownum { color: var(--aster-dim); width: 32px; }
+#editor-container .ed-preview-bad { color: #ff5c5c; }
+#editor-container .ed-preview-busy { color: var(--aster-dim); font-style: italic; }
+#editor-container .ed-preview-note { font-family: var(--aster-mono); font-size: 10px; color: var(--aster-dim); }
+#editor-container .ed-preview-more-wrap { display: flex; justify-content: center; padding: 4px 0 18px; }
+#editor-container .ed-preview-more { font-family: var(--aster-mono); font-size: 11px; color: var(--aster-cyan); background: transparent; border: 1px solid var(--aster-border); padding: 4px 14px; cursor: pointer; letter-spacing: 0.04em; }
+#editor-container .ed-preview-more:hover { border-color: var(--aster-cyan-dim); box-shadow: 0 0 12px var(--aster-glow); }
+.aster-panel { background: var(--aster-surface); border: 1px solid var(--aster-border); border-radius: 6px; box-shadow: 0 0 30px var(--aster-glow), inset 0 1px 0 var(--aster-hairline); }
+.aster-panel::before { background: linear-gradient(90deg, transparent, var(--aster-hairline) 22%, var(--aster-hairline) 78%, transparent); }
+.aster-panel-title h2, .aster-panel-title h3 { color: var(--aster-cyan); font-family: var(--aster-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; }
+.aster-slash { color: var(--aster-cyan-dim); }
+.aster-prompt { font-family: var(--aster-mono); color: var(--aster-text); }
+.aster-prompt::before { content: "~$"; color: var(--aster-cyan); }
+.aster-brand { border-color: var(--aster-hairline); color: var(--aster-cyan); background: rgba(0,229,191,0.06); box-shadow: 0 0 12px var(--aster-glow); }
+.aster-scroll { scrollbar-width: thin; scrollbar-color: var(--aster-border) transparent; }
+.aster-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.aster-scroll::-webkit-scrollbar-track { background: transparent; }
+.aster-scroll::-webkit-scrollbar-thumb { background: var(--aster-border); border-radius: 3px; }
+.aster-scroll::-webkit-scrollbar-thumb:hover { background: var(--aster-cyan-dim); }
+body.bg-pattern-grid { background-image: linear-gradient(color-mix(in srgb, var(--aster-cyan) 2%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--aster-cyan) 2%, transparent) 1px, transparent 1px); background-size: 40px 40px; background-attachment: fixed; }
+html.aster-chrome .admin-card { box-shadow: 0 0 30px var(--aster-glow), inset 0 1px 0 var(--aster-hairline); }
+@media (prefers-reduced-motion: no-preference) {
+  .aster-panel::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 40px var(--aster-glow); animation: aster-breathe 6s ease-in-out infinite; }
+  @keyframes aster-breathe { 0%,100% { opacity: 0.3; } 50% { opacity: 0.8; } }
+}
