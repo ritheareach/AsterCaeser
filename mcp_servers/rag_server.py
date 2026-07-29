@@ -11,11 +11,10 @@ from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import ServerRequestContext
+from mcp.types import Tool, TextContent, ListToolsResult, CallToolResult, PaginatedRequestParams, CallToolRequestParams
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-server = Server("rag")
 
 _rag_manager = None
 _personal_docs_manager = None
@@ -43,9 +42,8 @@ def _ensure_init():
         pass
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def _list_tools(ctx: ServerRequestContext, params: PaginatedRequestParams | None) -> ListToolsResult:
+    return ListToolsResult(tools=[
         Tool(
             name="manage_rag",
             description="Manage RAG indexed documents. List indexed files, add directories, or remove directories.",
@@ -62,13 +60,14 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         )
-    ]
+    ])
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     if name != "manage_rag":
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
     _ensure_init()
     action = arguments.get("action", "")
@@ -95,60 +94,55 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if len(files) > 50:
                     lines.append(f"  ... and {len(files) - 50} more")
             if not lines:
-                return [TextContent(type="text", text="No files or directories indexed in RAG.")]
-            return [TextContent(type="text", text="\n".join(lines))]
+                return CallToolResult(content=[TextContent(type="text", text="No files or directories indexed in RAG.")])
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(lines))])
         except Exception as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
 
     elif action == "add_directory":
         _dir = arguments.get("directory")
         directory = _dir.strip() if isinstance(_dir, str) else ""
         if not directory:
-            return [TextContent(type="text", text="Error: add_directory needs a directory path")]
-        # Store an absolute path so indexed `source` metadata is absolute and
-        # remove_directory (which abspath-normalizes) can match it later (#1660).
+            return CallToolResult(content=[TextContent(type="text", text="Error: add_directory needs a directory path")])
         directory = os.path.abspath(os.path.expanduser(directory))
         if not os.path.isdir(directory):
-            return [TextContent(type="text", text=f"Error: Directory not found: {directory}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Error: Directory not found: {directory}")])
         if not _rag_manager:
-            return [TextContent(type="text", text="Error: RAG manager not available")]
+            return CallToolResult(content=[TextContent(type="text", text="Error: RAG manager not available")])
         try:
             result = _rag_manager.index_personal_documents(directory)
             indexed = result.get("indexed_count", 0) if isinstance(result, dict) else 0
-            # Record the directory so `list` and `remove_directory` can see it.
-            # Indexing was just done above, so pass index=False to avoid a second
-            # (ownerless) pass. Without this the directory was indexed but never
-            # tracked in indexed_directories, so it was invisible/unremovable.
             if _personal_docs_manager and hasattr(_personal_docs_manager, "add_directory"):
                 try:
                     _personal_docs_manager.add_directory(directory, index=False)
                 except Exception:
                     pass
-            return [TextContent(type="text", text=f"Directory '{directory}' added to RAG index ({indexed} chunks indexed)")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Directory '{directory}' added to RAG index ({indexed} chunks indexed)")])
         except Exception as e:
-            return [TextContent(type="text", text=f"Error: Failed to index directory: {e}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Error: Failed to index directory: {e}")])
 
     elif action == "remove_directory":
         _dir = arguments.get("directory")
         directory = _dir.strip() if isinstance(_dir, str) else ""
         if not directory:
-            return [TextContent(type="text", text="Error: remove_directory needs a directory path")]
-        # Expand ~ to match add_directory, which indexes the expanded path.
-        # Without this, removing "~/docs" never matches the stored absolute path.
+            return CallToolResult(content=[TextContent(type="text", text="Error: remove_directory needs a directory path")])
         directory = os.path.expanduser(directory)
         if not _personal_docs_manager:
-            return [TextContent(type="text", text="Error: Personal docs manager not available")]
+            return CallToolResult(content=[TextContent(type="text", text="Error: Personal docs manager not available")])
         try:
             if hasattr(_personal_docs_manager, 'remove_directory'):
                 _personal_docs_manager.remove_directory(directory)
             if _rag_manager and hasattr(_rag_manager, 'remove_directory'):
                 _rag_manager.remove_directory(directory)
-            return [TextContent(type="text", text=f"Directory '{directory}' removed from RAG index")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Directory '{directory}' removed from RAG index")])
         except Exception as e:
-            return [TextContent(type="text", text=f"Error: Failed to remove directory: {e}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Error: Failed to remove directory: {e}")])
 
     else:
-        return [TextContent(type="text", text=f"Error: Unknown action '{action}'. Use: list, add_directory, remove_directory")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Error: Unknown action '{action}'. Use: list, add_directory, remove_directory")])
+
+
+server = Server("rag", on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 async def run():

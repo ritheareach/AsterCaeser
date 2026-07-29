@@ -1002,7 +1002,7 @@ function _renderHwVisibilityWarning(sys) {
   box.querySelector('[data-hw-action="copy"]')?.addEventListener('click', () => {
     // Keep diagnostics copy/paste friendly for GitHub issues and Docker support.
     const text = [
-      'Odysseus Cookbook hardware diagnostics',
+      'AsterCaeser Cookbook hardware diagnostics',
       `probe_scope=${sys?.probe_scope || ''}`,
       `containerized=${sys?.containerized === true}`,
       `backend=${sys?.backend || ''}`,
@@ -1015,9 +1015,9 @@ function _renderHwVisibilityWarning(sys) {
       `cpu_name=${sys?.cpu_name || ''}`,
       '',
       'Useful checks:',
-      'docker compose exec odysseus nvidia-smi -L',
-      'docker compose exec odysseus cat /proc/meminfo | head',
-      'docker compose exec odysseus python -c "from services.hwfit.hardware import detect_system; import json; print(json.dumps(detect_system(fresh=True), indent=2))"',
+      'docker compose exec astercaeser nvidia-smi -L',
+      'docker compose exec astercaeser cat /proc/meminfo | head',
+      'docker compose exec astercaeser python -c "from services.hwfit.hardware import detect_system; import json; print(json.dumps(detect_system(fresh=True), indent=2))"',
     ].join('\n');
 
     _copyText(text);
@@ -2157,7 +2157,7 @@ export function _hwfitInit() {
     // empty (see above), which made the rebuilt list temporarily miss the
     // selected server. The old code then "fell back" to the first remote server
     // and persisted it, silently flipping the active host even though the
-    // dropdown still showed odysseus. The user's selection must only change via
+    // dropdown still showed astercaeser. The user's selection must only change via
     // an explicit dropdown pick. Here we just refresh env/path if we can match
     // the current host; otherwise leave remoteHost untouched.
     const sel = _serverByVal(_envState.remoteServerKey || _envState.remoteHost);
@@ -2450,7 +2450,7 @@ export function _hwfitInit() {
           }));
         } catch (_) {}
         saveBtn.classList.add('saved');
-        saveBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#50fa7b" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;flex-shrink:0;"><polyline points="20 6 9 17 4 12"/></svg>Saved';
+        saveBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#2ecc71" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;flex-shrink:0;"><polyline points="20 6 9 17 4 12"/></svg>Saved';
         uiModule.showToast('Server saved');
       });
     }
@@ -2498,7 +2498,7 @@ export function _hwfitInit() {
           const data = await res.json();
           if (data.ok) {
             setupBtn.textContent = '\u2713 Done';
-            setupBtn.style.color = '#50fa7b';
+            setupBtn.style.color = '#2ecc71';
             uiModule.showToast(`Setup complete (${data.platform})`);
             // Store detected platform on the server entry
             if (data.platform) {

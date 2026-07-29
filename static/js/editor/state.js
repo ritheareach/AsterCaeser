@@ -72,7 +72,7 @@ export const state = {
   // ── Brush / Eraser / Clone tools ──
   // Shared paint color (brush picks up the swatch; eraser and clone
   // ignore color but reuse the same picker control).
-  color: '#e06c75',
+        color: '#ff6f52',
   // Brush diameter in canvas pixels. Persisted across tool switches;
   // bumped to a mask-friendly default on first inpaint entry.
   brushSize: 8,

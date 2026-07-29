@@ -2,7 +2,7 @@
 memory_server.py
 
 MCP server exposing memory management (list, add, edit, delete, search).
-Imports MemoryManager and MemoryVectorStore from the Odysseus codebase.
+Imports MemoryManager and MemoryVectorStore from the AsterCaeser codebase.
 """
 
 import asyncio
@@ -13,21 +13,20 @@ from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import ServerRequestContext
+from mcp.types import Tool, TextContent, ListToolsResult, CallToolResult, PaginatedRequestParams, CallToolRequestParams
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-server = Server("memory")
 
 # Late-initialized managers (set during first tool call)
 _memory_manager = None
 _memory_vector = None
 _initialized = False
 
-_OWNER_ENV_KEYS = ("ODYSSEUS_MCP_MEMORY_OWNER", "ODYSSEUS_MEMORY_OWNER")
+_OWNER_ENV_KEYS = ("ASTERCAESER_MCP_MEMORY_OWNER", "ASTERCAESER_MEMORY_OWNER")
 _OWNER_SCOPE_ERROR = (
     "Error: Memory MCP owner is not configured for an owner-scoped memory store. "
-    "Set ODYSSEUS_MCP_MEMORY_OWNER for this server or use the owner-aware native memory tool."
+    "Set ASTERCAESER_MCP_MEMORY_OWNER for this server or use the owner-aware native memory tool."
 )
 
 
@@ -70,8 +69,8 @@ def _scope_entries() -> tuple[str | None, list[dict], list[dict], str | None]:
     return owner, entries, visible, None
 
 
-def _text_result(text: str) -> list[TextContent]:
-    return [TextContent(type="text", text=text)]
+def _text_result(text: str) -> CallToolResult:
+    return CallToolResult(content=[TextContent(type="text", text=text)])
 
 
 def _ensure_init():
@@ -94,9 +93,8 @@ def _ensure_init():
         _memory_vector = None
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def _list_tools(ctx: ServerRequestContext, params: PaginatedRequestParams | None) -> ListToolsResult:
+    return ListToolsResult(tools=[
         Tool(
             name="manage_memory",
             description="Manage the user's memory system: list, add, edit, delete, or search memories.",
@@ -119,11 +117,12 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         )
-    ]
+    ])
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     if name != "manage_memory":
         return _text_result(f"Unknown tool: {name}")
 
@@ -256,6 +255,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     else:
         return _text_result(f"Error: Unknown action '{action}'. Use: list, add, edit, delete, search")
+
+
+server = Server("memory", on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 async def run():

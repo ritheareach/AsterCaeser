@@ -1,5 +1,5 @@
 /* ============================================ */
-/* Odysseus UI — Consolidated Stylesheet        */
+/* AsterCaeser UI — Consolidated Stylesheet        */
 /* ============================================ */
 
 
@@ -17,29 +17,29 @@
 
 :root {
   /* Core palette */
-  --bg: #282c34;
-  --fg: #9cdef2;
-  --panel: #111;
-  --border: #355a66;
-  --red: #e06c75;
+  --bg: #060a0e;
+  --fg: #00e5ff;
+  --panel: #090e14;
+  --border: #0d2a38;
+  --red: #ff2a5a;
   /* Were `var(--green)` / `var(--warn)` — self-referential, so they
      resolved to invalid and every site fell back to its own literal
      (or, for sites with no fallback, painted as transparent/inherit).
      Anchor them to real hex so the token layer actually works. */
-  --green: #50fa7b;
+  --green: #00e580;
   --warn: #f0ad4e;
 
   /* Syntax highlighting */
-  --hl-bg: #1e2228;
-  --hl-fg: #9cdef2;
-  --hl-keyword: #c678dd;
-  --hl-string: #e5c07b;
-  --hl-comment: #828997;
-  --hl-function: #61afef;
+  --hl-bg: #070c12;
+  --hl-fg: #00e5ff;
+  --hl-keyword: #c084fc;
+  --hl-string: #f0c080;
+  --hl-comment: #4e6675;
+  --hl-function: #4dc9f6;
   --hl-number: #d19a66;
-  --hl-builtin: #56b6c2;
-  --hl-variable: #abb2bf;
-  --hl-params: #a8c0d4;
+  --hl-builtin: #00e5ff;
+  --hl-variable: #88b0c0;
+  --hl-params: #7ca8b8;
 
   /* Semantic colors */
   --color-error: #ff4444;
@@ -1933,8 +1933,8 @@ body.bg-pattern-sparkles {
       margin-bottom:10px;
     }
     .welcome-boat {
-      width: 1.8rem;
-      height: 1.8rem;
+      width: 5.2rem;
+      height: 5.2rem;
       margin-right: 0.4rem;
       vertical-align: -0.15em;
       color: var(--brand-color, var(--red));
@@ -6069,7 +6069,7 @@ body.bg-pattern-sparkles {
     /* (legacy toolbar-toggle styles removed — now using .vis-* classes) */
 
     /* Demo highlight pulse */
-    .odysseus-highlight {
+    .astercaeser-highlight {
       outline: 2px solid var(--accent, var(--red)) !important;
       outline-offset: 1px;
       box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent, var(--red)) 18%, transparent);
@@ -6197,7 +6197,7 @@ body.bg-pattern-sparkles {
     @media (prefers-reduced-motion: reduce) {
       .th-cursor, .th-modal-group, .th-zone { animation: none !important; }
     }
-    .odysseus-hl-label {
+    .astercaeser-hl-label {
       position: absolute;
       top: -22px;
       left: 8px;
@@ -19049,7 +19049,7 @@ body.gallery-selecting .gallery-dl-btn,
 .cookbook-serve-preset-launch {
   background: none;
   border: none;
-  color: #50fa7b;
+  color: #2ecc71;
   cursor: pointer;
   font-size: 10px;
   opacity: 0.6;
@@ -23416,7 +23416,7 @@ body.gallery-selecting .gallery-dl-btn,
 
 /* Welcome name — left-to-right wipe with a touch of horizontal stretch.
    Fires on initial render via the .welcome-name rule; restarts on Nobody⇄
-   Odysseus toggle via JS reflow trick. */
+   AsterCaeser toggle via JS reflow trick. */
 .welcome-name {
   transform-origin: left center;
   animation: welcome-name-reveal 0.55s cubic-bezier(0.34, 1.32, 0.55, 1) both;
@@ -32748,7 +32748,7 @@ body.doc-find-active mark.doc-find-mark.current {
 }
 .email-compose-chip .compose-chip-remove:hover { opacity: 1; color: var(--red, #e55); }
 
-.email-odysseus-attach-menu {
+.email-astercaeser-attach-menu {
   position: fixed;
   z-index: 10050;
   width: 300px;
@@ -32762,7 +32762,7 @@ body.doc-find-active mark.doc-find-mark.current {
   box-shadow: 0 12px 30px rgba(0,0,0,0.28);
   overflow: hidden;
 }
-.email-odysseus-attach-local {
+.email-astercaeser-attach-local {
   width: 100%;
   height: 30px;
   display: flex;
@@ -32777,17 +32777,17 @@ body.doc-find-active mark.doc-find-mark.current {
   font-size: 11px;
   cursor: pointer;
 }
-.email-odysseus-attach-local:hover {
+.email-astercaeser-attach-local:hover {
   background: color-mix(in srgb, var(--accent-primary, var(--red)) 16%, transparent);
   border-color: color-mix(in srgb, var(--accent-primary, var(--red)) 55%, var(--border));
 }
-.email-odysseus-attach-tabs {
+.email-astercaeser-attach-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 5px;
   margin: 7px 0;
 }
-.email-odysseus-attach-tabs button {
+.email-astercaeser-attach-tabs button {
   height: 26px;
   display: inline-flex;
   align-items: center;
@@ -32802,16 +32802,16 @@ body.doc-find-active mark.doc-find-mark.current {
   font-size: 11px;
   cursor: pointer;
 }
-.email-odysseus-attach-tabs button.active {
+.email-astercaeser-attach-tabs button.active {
   opacity: 1;
   color: var(--accent-primary, var(--red));
   border-color: color-mix(in srgb, var(--accent-primary, var(--red)) 45%, var(--border));
   background: color-mix(in srgb, var(--accent-primary, var(--red)) 8%, transparent);
 }
-.email-odysseus-attach-tabs button svg {
+.email-astercaeser-attach-tabs button svg {
   flex-shrink: 0;
 }
-.email-odysseus-attach-search-wrap {
+.email-astercaeser-attach-search-wrap {
   height: 28px;
   display: flex;
   align-items: center;
@@ -32823,12 +32823,12 @@ body.doc-find-active mark.doc-find-mark.current {
   background: color-mix(in srgb, var(--fg) 3%, transparent);
   color: color-mix(in srgb, var(--fg) 48%, transparent);
 }
-.email-odysseus-attach-search-wrap:focus-within {
+.email-astercaeser-attach-search-wrap:focus-within {
   border-color: color-mix(in srgb, var(--accent-primary, var(--red)) 45%, var(--border));
   color: var(--accent-primary, var(--red));
   background: color-mix(in srgb, var(--accent-primary, var(--red)) 6%, transparent);
 }
-.email-odysseus-attach-search {
+.email-astercaeser-attach-search {
   min-width: 0;
   flex: 1;
   border: 0;
@@ -32838,17 +32838,17 @@ body.doc-find-active mark.doc-find-mark.current {
   font: inherit;
   font-size: 11px;
 }
-.email-odysseus-attach-search::placeholder {
+.email-astercaeser-attach-search::placeholder {
   color: color-mix(in srgb, var(--fg) 38%, transparent);
 }
-.email-odysseus-attach-list {
+.email-astercaeser-attach-list {
   max-height: 320px;
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.email-odysseus-attach-row {
+.email-astercaeser-attach-row {
   width: 100%;
   min-height: 38px;
   display: flex;
@@ -32863,15 +32863,15 @@ body.doc-find-active mark.doc-find-mark.current {
   font: inherit;
   cursor: pointer;
 }
-.email-odysseus-attach-row:hover {
+.email-astercaeser-attach-row:hover {
   background: var(--hover-bg, rgba(255,255,255,0.06));
   border-color: var(--border);
 }
-.email-odysseus-attach-row.is-selected {
+.email-astercaeser-attach-row.is-selected {
   background: color-mix(in srgb, var(--accent-primary, var(--red)) 10%, transparent);
   border-color: color-mix(in srgb, var(--accent-primary, var(--red)) 45%, var(--border));
 }
-.email-odysseus-attach-dot {
+.email-astercaeser-attach-dot {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
@@ -32880,13 +32880,13 @@ body.doc-find-active mark.doc-find-mark.current {
   border-radius: 50%;
   background: color-mix(in srgb, var(--fg) 4%, transparent);
 }
-.email-odysseus-attach-row.is-selected .email-odysseus-attach-dot {
+.email-astercaeser-attach-row.is-selected .email-astercaeser-attach-dot {
   border-color: var(--accent-primary, var(--red));
   background: var(--accent-primary, var(--red));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary, var(--red)) 18%, transparent);
 }
-.email-odysseus-attach-icon,
-.email-odysseus-attach-thumb {
+.email-astercaeser-attach-icon,
+.email-astercaeser-attach-thumb {
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
@@ -32897,42 +32897,42 @@ body.doc-find-active mark.doc-find-mark.current {
   background: color-mix(in srgb, var(--fg) 7%, transparent);
   overflow: hidden;
 }
-.email-odysseus-attach-thumb img {
+.email-astercaeser-attach-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
-.email-odysseus-attach-main {
+.email-astercaeser-attach-main {
   min-width: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.email-odysseus-attach-title,
-.email-odysseus-attach-meta {
+.email-astercaeser-attach-title,
+.email-astercaeser-attach-meta {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.email-odysseus-attach-title {
+.email-astercaeser-attach-title {
   font-size: 11px;
   line-height: 1.2;
 }
-.email-odysseus-attach-meta {
+.email-astercaeser-attach-meta {
   font-size: 10px;
   line-height: 1.15;
   opacity: 0.52;
 }
-.email-odysseus-attach-empty {
+.email-astercaeser-attach-empty {
   padding: 14px 8px;
   color: var(--muted, #888);
   font-size: 11px;
   text-align: center;
 }
-.email-odysseus-attach-actions {
+.email-astercaeser-attach-actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -32943,13 +32943,13 @@ body.doc-find-active mark.doc-find-mark.current {
   position: sticky;
   bottom: 0;
 }
-.email-odysseus-attach-count {
+.email-astercaeser-attach-count {
   flex: 1;
   min-width: 0;
   color: var(--muted, #888);
   font-size: 11px;
 }
-.email-odysseus-attach-selected {
+.email-astercaeser-attach-selected {
   height: 28px;
   min-width: 72px;
   padding: 0 12px;
@@ -32965,19 +32965,19 @@ body.doc-find-active mark.doc-find-mark.current {
   font-size: 11px;
   cursor: pointer;
 }
-.email-odysseus-attach-selected svg {
+.email-astercaeser-attach-selected svg {
   flex-shrink: 0;
 }
-.email-odysseus-attach-selected:disabled {
+.email-astercaeser-attach-selected:disabled {
   opacity: 0.45;
   cursor: default;
 }
-.email-odysseus-attach-selected.is-loading {
+.email-astercaeser-attach-selected.is-loading {
   opacity: 0.72;
   pointer-events: none;
 }
 @media (max-width: 768px) {
-  .email-odysseus-attach-menu {
+  .email-astercaeser-attach-menu {
     left: 8px !important;
     right: 8px;
     bottom: 8px;
@@ -32985,7 +32985,7 @@ body.doc-find-active mark.doc-find-mark.current {
     width: auto;
     max-height: 58vh;
   }
-  .email-odysseus-attach-list {
+  .email-astercaeser-attach-list {
     max-height: calc(58vh - 88px);
   }
 }
@@ -33973,7 +33973,7 @@ body.notes-drag-mode .note-card-pin svg {
   opacity: 1 !important;
 }
 .note-checkbox-agent.is-agent-stream-complete {
-  color: #50fa7b;
+  color: #2ecc71;
   opacity: 0.9;
 }
 .note-checkbox-agent svg {

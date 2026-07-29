@@ -341,7 +341,7 @@ export function createPreview({
 
   // ── Typst tier 2: tinymist sync ─────────────────────────────────────────
 
-  const FRAME_BRIDGE_TYPE = 'odysseus-typst-frame-v1';
+  const FRAME_BRIDGE_TYPE = 'astercaeser-typst-frame-v1';
   const SYNC_READY_TIMEOUT_MS = Math.max(1, Number(syncReadyTimeout) || 12_000);
 
   function _bufferContentFor(path) {

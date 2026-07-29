@@ -22,10 +22,10 @@ from src.typst_preview import (
 
 logger = logging.getLogger(__name__)
 
-SESSION_COOKIE = "odysseus_session"
+SESSION_COOKIE = "astercaeser_session"
 
 _FRAME_PATH = "/api/workspace/typst/frame"
-_FRAME_BRIDGE_TYPE = "odysseus-preview-frame-v2"
+_FRAME_BRIDGE_TYPE = "astercaeser-preview-frame-v2"
 _WS_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 

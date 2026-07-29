@@ -13,7 +13,7 @@ body{background:#fff;color:#000}
 </style></head>
 <body><div id="status">connecting…</div><div id="pages"></div>
 <script>
-(function(){'use strict';const TYPE='odysseus-preview-frame-v2';const pages=document.getElementById('pages');const status=document.getElementById('status');
+(function(){'use strict';const TYPE='astercaeser-preview-frame-v2';const pages=document.getElementById('pages');const status=document.getElementById('status');
 function send(msg){try{parent.postMessage({type:TYPE,...msg},window.location.origin)}catch(_){}}
 function setStatus(text){status.textContent=text}
 send({state:'ready'});setStatus('idle');

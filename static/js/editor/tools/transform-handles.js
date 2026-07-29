@@ -205,7 +205,7 @@ export function drawHandles(margin) {
     const radius = (active ? sz * 0.75 : hovered ? sz * 0.6 : sz / 2);
     ctx.beginPath();
     ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = active ? '#e06c75' : hovered ? '#ffd' : '#fff';
+    ctx.fillStyle = active ? '#ff6f52' : hovered ? '#ffd' : '#fff';
     ctx.fill();
     ctx.lineWidth = stroke;
     ctx.strokeStyle = active ? '#fff' : 'rgba(0, 0, 0, 0.5)';

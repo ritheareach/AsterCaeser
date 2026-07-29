@@ -39,12 +39,11 @@ if getattr(sys, 'frozen', False):
         global splash_root
         try:
             splash_root = tk.Tk()
-            splash_root.title("Odysseus")
+            splash_root.title("AsterCaeser")
             splash_root.overrideredirect(True)
-            splash_root.configure(bg="#1a1c23")
+            splash_root.configure(bg="#060a0e")
 
-            # Accented borders
-            splash_root.config(highlightbackground="#e06c75", highlightcolor="#e06c75", highlightthickness=1)
+            splash_root.config(highlightbackground="#00e5ff", highlightcolor="#00e5ff", highlightthickness=1)
 
             w, h = 360, 160
             ws = splash_root.winfo_screenwidth()
@@ -53,9 +52,9 @@ if getattr(sys, 'frozen', False):
             y = (hs - h) // 2
             splash_root.geometry(f"{w}x{h}+{x}+{y}")
 
-            tk.Label(splash_root, text="⛵ Odysseus", font=("Segoe UI", 22, "bold"), bg="#1a1c23", fg="#e06c75").pack(pady=(22, 2))
-            tk.Label(splash_root, text="Launching background services...", font=("Segoe UI", 10), bg="#1a1c23", fg="#d1d4e0").pack(pady=2)
-            tk.Label(splash_root, text="Please wait, this will take a few seconds.", font=("Segoe UI", 8, "italic"), bg="#1a1c23", fg="#5c6370").pack(pady=(12, 0))
+            tk.Label(splash_root, text="✦ AsterCaeser", font=("Segoe UI", 22, "bold"), bg="#060a0e", fg="#00e5ff").pack(pady=(22, 2))
+            tk.Label(splash_root, text="Launching background services...", font=("Segoe UI", 10), bg="#060a0e", fg="#6adcc2").pack(pady=2)
+            tk.Label(splash_root, text="Please wait, this will take a few seconds.", font=("Segoe UI", 8, "italic"), bg="#060a0e", fg="#4a6675").pack(pady=(12, 0))
 
             splash_root.attributes("-topmost", True)
             splash_root.mainloop()
@@ -67,17 +66,13 @@ if getattr(sys, 'frozen', False):
 
 
 def create_tray_image():
-    # Generate a beautiful 64x64 icon matching Odysseus brand red accent (#e06c75)
     from PIL import Image, ImageDraw
     image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     dc = ImageDraw.Draw(image)
-    accent_red = (224, 108, 117, 255)
-    light_red = (224, 108, 117, 150)
+    c = (0, 229, 255, 255)
 
-    # Draw premium sailing boat
-    dc.polygon([(32, 10), (32, 45), (12, 45)], fill=accent_red)
-    dc.polygon([(32, 18), (32, 45), (48, 45)], fill=light_red)
-    dc.polygon([(8, 48), (56, 48), (44, 56), (20, 56)], fill=accent_red)
+    dc.polygon([(32, 8), (56, 54), (42, 54), (37, 44), (27, 44), (22, 54), (8, 54)], fill=c)
+    dc.polygon([(32, 15), (36, 28), (50, 28), (41, 34), (43, 48), (32, 40), (21, 48), (23, 34), (14, 28), (28, 28)], fill=(0, 0, 0, 0))
     return image
 
 
@@ -95,13 +90,13 @@ def setup_system_tray(url):
         import pystray
         icon_img = create_tray_image()
         menu = (
-            pystray.MenuItem('Open Odysseus', lambda icon, item: on_open_browser(icon, item, url), default=True),
+            pystray.MenuItem('Open AsterCaeser', lambda icon, item: on_open_browser(icon, item, url), default=True),
             pystray.MenuItem('Exit', on_exit)
         )
         tray_icon = pystray.Icon(
-            "Odysseus",
+            "AsterCaeser",
             icon_img,
-            "Odysseus",
+            "AsterCaeser",
             menu
         )
         tray_icon.run()

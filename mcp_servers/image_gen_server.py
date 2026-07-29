@@ -12,18 +12,16 @@ from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import ServerRequestContext
+from mcp.types import Tool, TextContent, ListToolsResult, CallToolResult, PaginatedRequestParams, CallToolRequestParams
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.constants import GENERATED_IMAGES_DIR
 
-server = Server("image_gen")
 
-
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
+async def _list_tools(ctx: ServerRequestContext, params: PaginatedRequestParams | None) -> ListToolsResult:
+    return ListToolsResult(tools=[
         Tool(
             name="generate_image",
             description="Generate an image using an image-capable model (e.g. gpt-image-1)",
@@ -38,13 +36,14 @@ async def list_tools() -> list[Tool]:
                 "required": ["prompt"],
             },
         )
-    ]
+    ])
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
     if name != "generate_image":
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
     prompt = arguments.get("prompt", "")
     model_spec = arguments.get("model", "")
@@ -52,7 +51,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     quality = arguments.get("quality", "medium")
 
     if not prompt:
-        return [TextContent(type="text", text="Error: Image prompt is required")]
+        return CallToolResult(content=[TextContent(type="text", text="Error: Image prompt is required")])
 
     try:
         import httpx
@@ -60,7 +59,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         from src.ai_interaction import _resolve_model
 
         if not get_setting("image_gen_enabled", True):
-            return [TextContent(type="text", text="Error: Image generation is disabled by the administrator.")]
+            return CallToolResult(content=[TextContent(type="text", text="Error: Image generation is disabled by the administrator.")])
 
         _settings = load_settings()
 
@@ -79,7 +78,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 except ValueError:
                     continue
             if not model_spec:
-                return [TextContent(type="text", text="Error: No image model found. Configure one in Admin.")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: No image model found. Configure one in Admin.")])
 
         url, model_id, headers = await asyncio.to_thread(_resolve_model, model_spec)
 
@@ -108,12 +107,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     error_text = err_json.get("error", {}).get("message", error_text) if isinstance(err_json.get("error"), dict) else str(err_json.get("error", error_text))
                 except Exception:
                     pass
-                return [TextContent(type="text", text=f"Error: Image generation failed ({resp.status_code}): {error_text}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: Image generation failed ({resp.status_code}): {error_text}")])
 
             data = resp.json()
             images = data.get("data", [])
             if not images:
-                return [TextContent(type="text", text="Error: No images returned from API")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: No images returned from API")])
 
             img = images[0]
             image_url = None
@@ -150,7 +149,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             elif img.get("url"):
                 image_url = img["url"]
             else:
-                return [TextContent(type="text", text="Error: Unexpected image API response format")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: Unexpected image API response format")])
 
             # "Direct link:" rather than an "image_url:" label — small models copied the
             # label token ("image_url") into the link href, producing a broken link.
@@ -159,14 +158,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 f"Direct link: {image_url}\n"
                 f"model: {model_id}\nsize: {size}"
             )
-            return [TextContent(type="text", text=result)]
+            return CallToolResult(content=[TextContent(type="text", text=result)])
 
     except httpx.TimeoutException:
-        return [TextContent(type="text", text="Error: Image generation timed out (300s)")]
+        return CallToolResult(content=[TextContent(type="text", text="Error: Image generation timed out (300s)")])
     except ValueError as e:
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
     except Exception as e:
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
+
+
+server = Server("image_gen", on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 async def run():

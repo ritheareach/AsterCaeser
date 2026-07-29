@@ -107,15 +107,15 @@ export function handleUIControl(uiData) {
       }
 
     } else if (uiEvent === 'highlight' || uiData.ui_event === 'highlight') {
-      document.querySelectorAll('.odysseus-highlight').forEach(function(e) { e.classList.remove('odysseus-highlight'); });
-      document.querySelectorAll('.odysseus-hl-label').forEach(function(e) { e.remove(); });
+      document.querySelectorAll('.astercaeser-highlight').forEach(function(e) { e.classList.remove('astercaeser-highlight'); });
+      document.querySelectorAll('.astercaeser-hl-label').forEach(function(e) { e.remove(); });
       var target = document.querySelector(uiData.selector);
       if (target) {
-        target.classList.add('odysseus-highlight');
+        target.classList.add('astercaeser-highlight');
         target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         if (uiData.label) {
           var lbl = document.createElement('div');
-          lbl.className = 'odysseus-hl-label';
+          lbl.className = 'astercaeser-hl-label';
           lbl.textContent = uiData.label;
           if (!target.style.position) target.style.position = 'relative';
           target.appendChild(lbl);
@@ -123,8 +123,8 @@ export function handleUIControl(uiData) {
       }
 
     } else if (uiEvent === 'clear_highlight' || uiData.ui_event === 'clear_highlight') {
-      document.querySelectorAll('.odysseus-highlight').forEach(function(e) { e.classList.remove('odysseus-highlight'); });
-      document.querySelectorAll('.odysseus-hl-label').forEach(function(e) { e.remove(); });
+      document.querySelectorAll('.astercaeser-highlight').forEach(function(e) { e.classList.remove('astercaeser-highlight'); });
+      document.querySelectorAll('.astercaeser-hl-label').forEach(function(e) { e.remove(); });
 
     } else if (uiEvent === 'research_started' || uiData.ui_event === 'research_started') {
       // Agent kicked off deep research — adopt the session into the

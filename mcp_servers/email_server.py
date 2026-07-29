@@ -27,11 +27,11 @@ from contextvars import ContextVar
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.server import ServerRequestContext
+from mcp.types import Tool, TextContent, ListToolsResult, CallToolResult, PaginatedRequestParams, CallToolRequestParams
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-server = Server("email")
 EMAIL_SOCKET_TIMEOUT = float(os.environ.get("EMAIL_SOCKET_TIMEOUT", "20"))
 from src.constants import DATA_DIR as _DATA_DIR, APP_DB, EMAIL_CACHE_DB, SETTINGS_FILE as _SETTINGS_FILE, MAIL_ATTACHMENTS_DIR
 DATA_DIR = Path(_DATA_DIR)
@@ -56,11 +56,11 @@ def _uid_fetch_rows(data) -> list:
 # flat keys when no DB row matches (legacy single-account behaviour).
 
 _ACCOUNT_CACHE: dict = {}  # key = normalized account selector -> config dict
-_MCP_OWNER_ARG = "_odysseus_owner"
+_MCP_OWNER_ARG = "_astercaeser_owner"
 _CURRENT_OWNER: ContextVar[str | None] = ContextVar("email_mcp_owner", default=None)
-_OWNER_ENV_KEYS = ("ODYSSEUS_MCP_EMAIL_OWNER", "ODYSSEUS_EMAIL_OWNER")
+_OWNER_ENV_KEYS = ("ASTERCAESER_MCP_EMAIL_OWNER", "ASTERCAESER_EMAIL_OWNER")
 _OWNER_SCOPE_ERROR = (
-    "Error: email MCP requires an authenticated owner or ODYSSEUS_MCP_EMAIL_OWNER "
+    "Error: email MCP requires an authenticated owner or ASTERCAESER_MCP_EMAIL_OWNER "
     "when owner-scoped email accounts are configured."
 )
 
@@ -162,7 +162,7 @@ def _default_document_owner() -> str | None:
     but the document library is owner-filtered. Stamp drafts to the configured
     single/default admin so assistant-created email drafts are visible.
     """
-    owner = os.environ.get("ODYSSEUS_DOCUMENT_OWNER", "").strip()
+    owner = os.environ.get("ASTERCAESER_DOCUMENT_OWNER", "").strip()
     if owner:
         return owner
     try:
@@ -593,7 +593,7 @@ def _fixture_email_record(row: dict, uid_num: int, owner: str) -> dict:
     uid = str(uid_num)
     return {
         "uid": uid,
-        "message_id": f"<fixture-email-{uid}-{owner_key}@fixtures.odysseus.local>",
+        "message_id": f"<fixture-email-{uid}-{owner_key}@fixtures.astercaeser.local>",
         "subject": subject,
         "from": sender_name or sender_addr or sender,
         "from_address": sender_addr,
@@ -636,11 +636,11 @@ def _fixture_account_rows() -> list[dict]:
     owner = _current_owner()
     owners = []
     for row in _fixture_email_rows(owner or None):
-        email_addr = row.get("account_email") or owner or "fixture@fixtures.odysseus.local"
+        email_addr = row.get("account_email") or owner or "fixture@fixtures.astercaeser.local"
         if email_addr not in owners:
             owners.append(email_addr)
     if not owners:
-        owners = [owner or "fixture@fixtures.odysseus.local"]
+        owners = [owner or "fixture@fixtures.astercaeser.local"]
     return [
         {
             "id": "fixture-email",
@@ -1162,13 +1162,13 @@ def _stash_agent_draft(*, to, subject, body, in_reply_to=None, references=None,
                 error TEXT,
                 owner TEXT DEFAULT '',
                 account_id TEXT,
-                odysseus_kind TEXT
+                astercaeser_kind TEXT
             )
         """)
         conn.execute("""
             INSERT INTO scheduled_emails
             (id, to_addr, cc, bcc, subject, body, in_reply_to, references_hdr,
-             attachments, send_at, created_at, status, account_id, odysseus_kind, owner)
+             attachments, send_at, created_at, status, account_id, astercaeser_kind, owner)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent_draft', ?, ?, ?)
         """, (
             pending_id,
@@ -1352,7 +1352,7 @@ def _create_email_draft_document(
     account=None,
     source_message_id=None,
 ):
-    """Create an Odysseus email compose document for user review. Does not send."""
+    """Create an AsterCaeser email compose document for user review. Does not send."""
     from core.database import SessionLocal, Document, DocumentVersion
     try:
         from src.event_bus import fire_event
@@ -1464,7 +1464,7 @@ def _create_email_draft_document(
 
 
 def _draft_reply_to_email(uid, body, folder="INBOX", reply_all=False, account=None, title=None):
-    """Create a threaded Odysseus reply draft document. Does not send."""
+    """Create a threaded AsterCaeser reply draft document. Does not send."""
     conn = _imap_connect(account)
     conn.select(_q(folder), readonly=True)
     status, msg_data = conn.uid("FETCH", _b(uid), "(BODY.PEEK[])")
@@ -1516,7 +1516,7 @@ def _draft_reply_to_email(uid, body, folder="INBOX", reply_all=False, account=No
 
 
 async def _ai_draft_reply_to_email(uid, folder="INBOX", reply_all=False, account=None, title=None):
-    """Generate a reply with Odysseus' AI-reply prompt/style, then create a compose doc."""
+    """Generate a reply with AsterCaeser' AI-reply prompt/style, then create a compose doc."""
     read_result = _read_email(uid=uid, folder=folder, account=account)
     if "error" in read_result:
         return read_result
@@ -1832,8 +1832,7 @@ def _download_attachment(uid, index, folder="INBOX", account=None):
 # ── MCP Tool Registration ──
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
+async def _list_tools(ctx: ServerRequestContext, params: PaginatedRequestParams | None) -> ListToolsResult:
     # The user may have multiple IMAP accounts configured. Every tool accepts an
     # optional `account` param — match by name (e.g. "work"), email address,
     # or account id. Leave it out to use the default account.
@@ -1844,11 +1843,11 @@ async def list_tools() -> list[Tool]:
                            "Omit to use the default account. Use list_email_accounts to discover available accounts.",
         },
     }
-    return [
+    tools = [
         Tool(
             name="list_email_accounts",
             description=(
-                "List the email accounts configured in Odysseus. Returns each account's "
+                "List the email accounts configured in AsterCaeser. Returns each account's "
                 "name, email address, and whether it's the default. Use this first when "
                 "the user asks about a specific inbox by name (e.g. 'check work')."
             ),
@@ -1914,7 +1913,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Send a new email via SMTP. Provide recipient(s), subject, and body. "
                 "This sends immediately; for normal assistant-written email, prefer "
-                "draft_email so the user can review and send from Odysseus. "
+                "draft_email so the user can review and send from AsterCaeser. "
                 "For replying to an existing thread, use reply_to_email instead. "
                 "Pass `account` to send from a non-default mailbox."
             ),
@@ -1934,10 +1933,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="draft_email",
             description=(
-                "Create a new Odysseus email compose draft document. This DOES NOT send. "
+                "Create a new AsterCaeser email compose draft document. This DOES NOT send. "
                 "Use this as the default way to write an email for the user: it opens "
                 "a reviewable email document with To/Cc/Bcc/Subject/body, and the user "
-                "can edit or press Send in Odysseus. "
+                "can edit or press Send in AsterCaeser. "
                 f"{_writing_style_guidance()}"
             ),
             inputSchema={
@@ -1948,7 +1947,7 @@ async def list_tools() -> list[Tool]:
                     "body": {"type": "string", "description": "Draft body"},
                     "cc": {"type": "string", "description": "CC address(es), comma-separated (optional)"},
                     "bcc": {"type": "string", "description": "BCC address(es), comma-separated (optional)"},
-                    "title": {"type": "string", "description": "Optional Odysseus document title"},
+                    "title": {"type": "string", "description": "Optional AsterCaeser document title"},
                     **ACCOUNT_PROP,
                 },
                 "required": ["to", "subject", "body"],
@@ -1959,7 +1958,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Reply to an existing email by UID. This sends immediately. Do NOT use "
                 "for normal 'write/draft a reply saying X' requests; use "
-                "draft_email_reply so the user can review and send from Odysseus. "
+                "draft_email_reply so the user can review and send from AsterCaeser. "
                 "Only use this when the user explicitly says to send now. Automatically threads the reply with "
                 "In-Reply-To and References headers, prefixes 'Re:' on the subject, and "
                 "uses the original sender as the recipient. Set reply_all=true to also CC "
@@ -1981,7 +1980,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="draft_email_reply",
             description=(
-                "Create an Odysseus email reply draft document for an existing email UID. "
+                "Create an AsterCaeser email reply draft document for an existing email UID. "
                 "This DOES NOT send. It threads the draft with In-Reply-To/References, "
                 "prefills the recipient and subject, and stores source email metadata so "
                 "the user can review and send from the normal email composer. "
@@ -1994,7 +1993,7 @@ async def list_tools() -> list[Tool]:
                     "body": {"type": "string", "description": "Draft reply body text"},
                     "folder": {"type": "string", "description": "IMAP folder (default: INBOX)", "default": "INBOX"},
                     "reply_all": {"type": "boolean", "description": "Reply to all recipients (default: false)", "default": False},
-                    "title": {"type": "string", "description": "Optional Odysseus document title"},
+                    "title": {"type": "string", "description": "Optional AsterCaeser document title"},
                     **ACCOUNT_PROP,
                 },
                 "required": ["uid", "body"],
@@ -2003,7 +2002,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="ai_draft_email_reply",
             description=(
-                "Generate an AI reply using Odysseus' existing AI Reply behavior, "
+                "Generate an AI reply using AsterCaeser' existing AI Reply behavior, "
                 "including Settings > Email > Writing Style, then create an email "
                 "compose document for review. This DOES NOT send and does NOT save "
                 "to the mailbox Drafts folder. Use this when the user asks you to "
@@ -2015,7 +2014,7 @@ async def list_tools() -> list[Tool]:
                     "uid": {"type": "string", "description": "Exact Email UID from list_emails/read_email; never invent UID 1"},
                     "folder": {"type": "string", "description": "IMAP folder (default: INBOX)", "default": "INBOX"},
                     "reply_all": {"type": "boolean", "description": "Reply to all recipients (default: false)", "default": False},
-                    "title": {"type": "string", "description": "Optional Odysseus document title"},
+                    "title": {"type": "string", "description": "Optional AsterCaeser document title"},
                     **ACCOUNT_PROP,
                 },
                 "required": ["uid"],
@@ -2157,17 +2156,18 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+    return ListToolsResult(tools=tools)
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    arguments = dict(arguments) if isinstance(arguments, dict) else {}
+async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+    name = params.name
+    arguments = dict(params.arguments or {})
     owner = str(arguments.pop(_MCP_OWNER_ARG, "") or "").strip()
     owner_token = _CURRENT_OWNER.set(owner or None)
     try:
         all_db_accounts = _read_accounts_from_db()
         if _mcp_owner_required(all_db_accounts):
-            return [TextContent(type="text", text=_OWNER_SCOPE_ERROR)]
+            return CallToolResult(content=[TextContent(type="text", text=_OWNER_SCOPE_ERROR)])
 
         if name == "list_email_accounts":
             rows = _filter_accounts_for_owner(all_db_accounts)
@@ -2175,8 +2175,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 rows = _fixture_account_rows()
             if not rows:
                 if all_db_accounts and owner:
-                    return [TextContent(type="text", text="No email accounts configured for this owner.")]
-                return [TextContent(type="text", text="No email accounts configured. Legacy single-account mode active.")]
+                    return CallToolResult(content=[TextContent(type="text", text="No email accounts configured for this owner.")])
+                return CallToolResult(content=[TextContent(type="text", text="No email accounts configured. Legacy single-account mode active.")])
             lines = [f"Found {len(rows)} email account(s):\n"]
             for r in rows:
                 star = " (default)" if r.get("is_default") else ""
@@ -2185,7 +2185,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     f"  email: {r.get('imap_user') or r.get('from_address') or '(unknown)'}\n"
                     f"  id: {r['id']}"
                 )
-            return [TextContent(type="text", text="\n".join(lines))]
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(lines))])
 
         acct = arguments.get("account")  # consumed by all email ops
 
@@ -2249,7 +2249,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 msg = "No unread/unresponded emails found."
                 if header_lines:
                     msg = "\n".join(header_lines) + msg
-                return [TextContent(type="text", text=msg)]
+                return CallToolResult(content=[TextContent(type="text", text=msg)])
 
             lines = header_lines + [f"Found {len(results)} email(s):\n"]
             for i, em in enumerate(results, 1):
@@ -2262,24 +2262,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if em.get("summary"):
                     line += f"\n   Summary: {em['summary']}"
                 lines.append(line)
-            return [TextContent(type="text", text="\n\n".join(lines))]
+            return CallToolResult(content=[TextContent(type="text", text="\n\n".join(lines))])
 
         elif name == "download_attachment":
             uid = arguments.get("uid")
             index = arguments.get("index")
             folder = arguments.get("folder", "INBOX")
             if uid is None or index is None:
-                return [TextContent(type="text", text="Error: uid and index are required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid and index are required")])
             result = _download_attachment(uid, index, folder, account=acct)
             if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: {result['error']}")])
             text = (
                 f"Attachment downloaded to: `{result['path']}`\n"
                 f"Filename: {result['filename']}\n"
                 f"Size: {result['size']} bytes\n\n"
                 f"You can now read this file using the read_file tool."
             )
-            return [TextContent(type="text", text=text)]
+            return CallToolResult(content=[TextContent(type="text", text=text)])
 
         elif name == "search_emails":
             q = arguments.get("query", "")
@@ -2288,9 +2288,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             try:
                 hits = _search_emails(q, folders=folders, max_results=max_results, account=acct)
             except Exception as e:
-                return [TextContent(type="text", text=f"Search failed: {e}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Search failed: {e}")])
             if not hits:
-                return [TextContent(type="text", text=f'No emails matched "{q}".')]
+                return CallToolResult(content=[TextContent(type="text", text=f'No emails matched "{q}".')])
             lines = [f'Found {len(hits)} email(s) matching "{q}":\n']
             for i, em in enumerate(hits, 1):
                 lines.append(
@@ -2304,7 +2304,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     lines.append(f"   To: {em['to']}")
                 if em.get('summary'):
                     lines.append(f"   Summary: {em['summary']}")
-            return [TextContent(type="text", text="\n".join(lines))]
+            return CallToolResult(content=[TextContent(type="text", text="\n".join(lines))])
 
         elif name == "read_email":
             all_accounts = _list_accounts_raw()
@@ -2322,7 +2322,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     account=acct,
                 )
             if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: {result['error']}")])
 
             text = (
                 f"**Subject:** {result['subject']}\n"
@@ -2339,14 +2339,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     text += f"  - [{a['index']}] {a['filename']} ({a['content_type']}, {size_kb}KB)\n"
                 text += "\n_Use `download_attachment` with the UID and index to download._\n"
             text += f"\n---\n\n{result['body']}"
-            return [TextContent(type="text", text=text)]
+            return CallToolResult(content=[TextContent(type="text", text=text)])
 
         elif name == "send_email":
             to = arguments.get("to")
             subject = arguments.get("subject")
             body = arguments.get("body")
             if not to or not subject or body is None:
-                return [TextContent(type="text", text="Error: to, subject, and body are required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: to, subject, and body are required")])
             result = _send_email(
                 to=to,
                 subject=subject,
@@ -2356,24 +2356,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 account=acct,
             )
             if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: {result['error']}")])
             if result.get("pending"):
                 return [TextContent(
                     type="text",
                     text=(
                         f"Draft staged for approval (pending id: {result.get('pending_id')}). "
-                        "Nothing has been sent yet. Review and approve it in Odysseus before delivery."
+                        "Nothing has been sent yet. Review and approve it in AsterCaeser before delivery."
                     ),
                 )]
             acct_note = f" (from {result['account']})" if result.get("account") else ""
-            return [TextContent(type="text", text=f"Sent email to {result['to']} with subject '{result['subject']}'{acct_note}.")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Sent email to {result['to']} with subject '{result['subject']}'{acct_note}.")])
 
         elif name == "draft_email":
             to = arguments.get("to")
             subject = arguments.get("subject")
             body = arguments.get("body")
             if not to or not subject or body is None:
-                return [TextContent(type="text", text="Error: to, subject, and body are required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: to, subject, and body are required")])
             result = _create_email_draft_document(
                 to=to,
                 subject=subject,
@@ -2387,9 +2387,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(
                 type="text",
                 text=(
-                    f"Created Odysseus email draft `{result['title']}` "
+                    f"Created AsterCaeser email draft `{result['title']}` "
                     f"(document ID: {result['doc_id']}){acct_note}. "
-                    "It has not been sent; open the document in Odysseus to review and send."
+                    "It has not been sent; open the document in AsterCaeser to review and send."
                 ),
             )]
 
@@ -2397,7 +2397,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             uid = arguments.get("uid")
             body = arguments.get("body")
             if not uid or body is None:
-                return [TextContent(type="text", text="Error: uid and body are required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid and body are required")])
             result = _reply_to_email(
                 uid=uid,
                 body=body,
@@ -2406,19 +2406,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 account=acct,
             )
             if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: {result['error']}")])
             # Mark original as answered
             try:
                 _set_flag(uid, arguments.get("folder", "INBOX"), "\\Answered", add=True, account=acct)
             except Exception:
                 pass
-            return [TextContent(type="text", text=f"Replied to UID {uid}: '{result['subject']}' → {result['to']}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Replied to UID {uid}: '{result['subject']}' → {result['to']}")])
 
         elif name == "draft_email_reply":
             uid = arguments.get("uid")
             body = arguments.get("body")
             if not uid or body is None:
-                return [TextContent(type="text", text="Error: uid and body are required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid and body are required")])
             result = _draft_reply_to_email(
                 uid=uid,
                 body=body,
@@ -2428,21 +2428,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 title=arguments.get("title"),
             )
             if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: {result['error']}")])
             acct_note = f" from {result['account']}" if result.get("account") else ""
             return [TextContent(
                 type="text",
                 text=(
-                    f"Created Odysseus reply draft `{result['title']}` for UID {uid} "
+                    f"Created AsterCaeser reply draft `{result['title']}` for UID {uid} "
                     f"(document ID: {result['doc_id']}){acct_note}. "
-                    "It has not been sent; open the document in Odysseus to review and send."
+                    "It has not been sent; open the document in AsterCaeser to review and send."
                 ),
             )]
 
         elif name == "ai_draft_email_reply":
             uid = arguments.get("uid")
             if not uid:
-                return [TextContent(type="text", text="Error: uid is required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid is required")])
             result = await _ai_draft_reply_to_email(
                 uid=uid,
                 folder=arguments.get("folder", "INBOX"),
@@ -2451,44 +2451,44 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 title=arguments.get("title"),
             )
             if "error" in result:
-                return [TextContent(type="text", text=f"Error: {result['error']}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Error: {result['error']}")])
             acct_note = f" from {result['account']}" if result.get("account") else ""
             return [TextContent(
                 type="text",
                 text=(
-                    f"Generated AI reply and created Odysseus compose draft "
+                    f"Generated AI reply and created AsterCaeser compose draft "
                     f"`{result['title']}` for UID {uid} (document ID: {result['doc_id']}){acct_note}. "
-                    "It has not been sent; open the document in Odysseus to review and send."
+                    "It has not been sent; open the document in AsterCaeser to review and send."
                 ),
             )]
 
         elif name == "archive_email":
             uid = arguments.get("uid")
             if not uid:
-                return [TextContent(type="text", text="Error: uid is required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid is required")])
             ok = _archive_email(uid, arguments.get("folder", "INBOX"), account=acct)
-            return [TextContent(type="text", text=f"{'Archived' if ok else 'Failed to archive'} UID {uid}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"{'Archived' if ok else 'Failed to archive'} UID {uid}")])
 
         elif name == "delete_email":
             uid = arguments.get("uid")
             if not uid:
-                return [TextContent(type="text", text="Error: uid is required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid is required")])
             ok = _delete_email(
                 uid,
                 arguments.get("folder", "INBOX"),
                 permanent=bool(arguments.get("permanent", False)),
                 account=acct,
             )
-            return [TextContent(type="text", text=f"{'Deleted' if ok else 'Failed to delete'} UID {uid}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"{'Deleted' if ok else 'Failed to delete'} UID {uid}")])
 
         elif name == "mark_email_read":
             uid = arguments.get("uid")
             if not uid:
-                return [TextContent(type="text", text="Error: uid is required")]
+                return CallToolResult(content=[TextContent(type="text", text="Error: uid is required")])
             read = bool(arguments.get("read", True))
             ok = _set_flag(uid, arguments.get("folder", "INBOX"), "\\Seen", add=read, account=acct)
             state = "read" if read else "unread"
-            return [TextContent(type="text", text=f"{'Marked' if ok else 'Failed to mark'} UID {uid} as {state}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"{'Marked' if ok else 'Failed to mark'} UID {uid} as {state}")])
 
         elif name == "bulk_email":
             action = arguments.get("action", "")
@@ -2498,7 +2498,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if all_unread:
                 uids = _search_uids(folder, "UNSEEN", account=acct)
             if not uids:
-                return [TextContent(type="text", text="No messages selected (pass uids or all_unread=true).")]
+                return CallToolResult(content=[TextContent(type="text", text="No messages selected (pass uids or all_unread=true).")])
             requested_n = len(uids)
             changed_n = 0
             try:
@@ -2527,21 +2527,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         changed_n = _bulk_move(uids, folder, cfg["trash_folder"], account=acct, role="trash")
                         verb = "moved to Trash"
                 else:
-                    return [TextContent(type="text", text=f"Unknown bulk action: {action!r}. Use mark_read/mark_unread/archive/delete/junk.")]
+                    return CallToolResult(content=[TextContent(type="text", text=f"Unknown bulk action: {action!r}. Use mark_read/mark_unread/archive/delete/junk.")])
             except Exception as e:
-                return [TextContent(type="text", text=f"Bulk {action} failed after partial work: {e}")]
+                return CallToolResult(content=[TextContent(type="text", text=f"Bulk {action} failed after partial work: {e}")])
             if changed_n <= 0:
-                return [TextContent(type="text", text=f"No matching UIDs found in {folder}; 0 of {requested_n} email(s) {verb}.")]
+                return CallToolResult(content=[TextContent(type="text", text=f"No matching UIDs found in {folder}; 0 of {requested_n} email(s) {verb}.")])
             suffix = "" if changed_n == requested_n else f" ({changed_n} of {requested_n} requested UIDs matched)"
-            return [TextContent(type="text", text=f"Done — {changed_n} email(s) {verb}{suffix}.")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Done — {changed_n} email(s) {verb}{suffix}.")])
 
         else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
 
     except Exception as e:
-        return [TextContent(type="text", text=f"Error: {e}")]
+        return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
     finally:
         _CURRENT_OWNER.reset(owner_token)
+
+
+server = Server("email", on_list_tools=_list_tools, on_call_tool=_call_tool)
 
 
 # ── Main ──

@@ -1,22 +1,22 @@
 {
-  "name": "odysseus",
+  "name": "astercaeser",
   "version": "0.1.1",
-  "description": "Connect Codex to a scoped Odysseus instance.",
+  "description": "Connect Codex to a scoped AsterCaeser instance.",
   "author": {
-    "name": "Odysseus"
+    "name": "AsterCaeser"
   },
   "skills": "./skills/",
   "interface": {
-    "displayName": "Odysseus",
-    "shortDescription": "Use scoped Odysseus tools from Codex.",
-    "longDescription": "Connects Codex terminal sessions to Odysseus through user-controlled scoped API tokens. Codex must use /api/codex/* endpoints so Odysseus Settings can enforce tool access.",
-    "developerName": "Odysseus",
+    "displayName": "AsterCaeser",
+    "shortDescription": "Use scoped AsterCaeser tools from Codex.",
+    "longDescription": "Connects Codex terminal sessions to AsterCaeser through user-controlled scoped API tokens. Codex must use /api/codex/* endpoints so AsterCaeser Settings can enforce tool access.",
+    "developerName": "AsterCaeser",
     "category": "Productivity",
     "capabilities": [
       "todos",
       "email",
       "scoped-api"
     ],
-    "defaultPrompt": "Use Odysseus only through configured scoped access. Check capabilities before reading or writing data."
+    "defaultPrompt": "Use AsterCaeser only through configured scoped access. Check capabilities before reading or writing data."
   }
 }
