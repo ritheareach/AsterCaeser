@@ -172,6 +172,54 @@ class EncryptedText(TypeDecorator):
         return decrypt(value)
 
 
+class Workspace(TimestampMixin, Base):
+    """A workspace that contains projects."""
+    __tablename__ = "workspaces"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    owner = Column(String, nullable=True, index=True)
+
+    projects = relationship("Project", back_populates="workspace", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class Project(TimestampMixin, Base):
+    """A project within a workspace, optionally bound to a filesystem path."""
+    __tablename__ = "projects"
+
+    id = Column(String, primary_key=True, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+    path = Column(String, nullable=True)
+    owner = Column(String, nullable=True, index=True)
+
+    workspace = relationship("Workspace", back_populates="projects")
+    sessions = relationship("Session", back_populates="project")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "workspace_id": self.workspace_id,
+            "name": self.name,
+            "description": self.description,
+            "path": self.path,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "chat_count": len(self.sessions) if self.sessions else 0,
+        }
+
+
 class Session(TimestampMixin, Base):
     """
     SQLAlchemy model for Session table.
@@ -194,6 +242,7 @@ class Session(TimestampMixin, Base):
 
     # Organization
     folder = Column(String, nullable=True, default=None)
+    project_id = Column(String, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Headers stored as JSON
     headers = Column(JSON, default=dict)
@@ -224,6 +273,7 @@ class Session(TimestampMixin, Base):
 
     # Relationship to chat messages
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+    project = relationship("Project", back_populates="sessions")
     
     @property
     def is_active(self):
@@ -1971,7 +2021,45 @@ def init_db():
     _migrate_encrypt_email_passwords()
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
+    _migrate_add_workspace_project_tables()
+    _migrate_add_project_id_column()
     _migrate_backfill_task_folders()
+
+
+def _migrate_add_workspace_project_tables():
+    """Create workspaces and projects tables if they don't exist.
+
+    Idempotent — checks if the workspaces table exists before creating.
+    """
+    try:
+        with engine.connect() as conn:
+            has_workspaces = conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='workspaces'")
+            ).fetchone()
+            if not has_workspaces:
+                Workspace.__table__.create(engine)
+                logger.info("Created workspaces table")
+            has_projects = conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+            ).fetchone()
+            if not has_projects:
+                Project.__table__.create(engine)
+                logger.info("Created projects table")
+    except Exception as e:
+        logger.warning("Could not create workspace/project tables: %s", e)
+
+
+def _migrate_add_project_id_column():
+    """Add project_id column to sessions table."""
+    try:
+        with engine.connect() as conn:
+            cols = [row[1] for row in conn.execute(text("PRAGMA table_info(sessions)")).fetchall()]
+            if "project_id" not in cols:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN project_id VARCHAR REFERENCES projects(id) ON DELETE SET NULL"))
+                conn.commit()
+                logger.info("Added project_id column to sessions table")
+    except Exception as e:
+        logger.warning("Could not add project_id column: %s", e)
 
 
 def _migrate_backfill_task_folders():
