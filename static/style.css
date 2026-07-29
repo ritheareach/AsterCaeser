@@ -40964,3 +40964,30 @@ body.theme-frosted .modal {
 .ce-search-hit:hover { background: color-mix(in srgb, var(--accent, var(--red)) 10%, transparent); }
 .ce-search-line-num { opacity: 0.3; min-width: 30px; text-align: right; flex-shrink: 0; }
 .ce-search-line-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Preview Panel ── */
+.editor-preview-panel {
+  display: none;
+  flex-direction: column;
+  width: 45%;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  min-width: 300px;
+}
+.preview-toolbar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.preview-title { flex: 1; font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-actions { display: flex; gap: 2px; }
+.preview-action-btn { background: none; border: none; color: var(--fg); cursor: pointer; padding: 2px 5px; border-radius: 3px; font-size: 13px; opacity: 0.5; }
+.preview-action-btn:hover { opacity: 1; background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.preview-content { flex: 1; overflow-y: auto; padding: 16px; }
+.preview-content h1 { font-size: 1.5em; margin: 0 0 8px; }
+.preview-content h2 { font-size: 1.3em; margin: 12px 0 6px; }
+.preview-content h3 { font-size: 1.1em; margin: 10px 0 4px; }
+.preview-content p { margin: 0 0 8px; line-height: 1.5; }
+.preview-content code { background: var(--panel); padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+.preview-content pre { background: var(--panel); padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.preview-content pre code { background: none; padding: 0; }
+.preview-content li { margin: 2px 0; }
+.preview-loading, .preview-error { text-align: center; padding: 40px; opacity: 0.4; }
+.preview-iframe { width: 100%; height: 100%; border: none; background: #fff; }
+.preview-typst-fallback { white-space: pre-wrap; font-family: 'Fira Code', monospace; font-size: 12px; }
