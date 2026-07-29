@@ -248,12 +248,35 @@ function _renderProjectDetail(container) {
     _view = 'list'; _renderMainView();
   });
   container.querySelectorAll('.project-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
+    tab.addEventListener('click', async () => {
       container.querySelectorAll('.project-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       container.querySelectorAll('.project-tab-content').forEach(c => c.style.display = 'none');
       const target = document.getElementById('project-tab-' + tab.dataset.tab);
       if (target) target.style.display = '';
+      if (tab.dataset.tab === 'chats') {
+        try {
+          const data = await _getApi(`/${p.workspace_id}/project/${p.id}/chats`);
+          const listEl = document.getElementById('project-tab-chats');
+          if (data.chats && data.chats.length > 0) {
+            listEl.innerHTML = data.chats.map(c =>
+              `<div class="project-chat-row" data-id="${c.id}">
+                <span class="project-chat-name">${uiModule.esc(c.name)}</span>
+                <span class="project-chat-date">${new Date(c.last_accessed || c.created_at).toLocaleDateString()}</span>
+              </div>`
+            ).join('');
+            listEl.querySelectorAll('.project-chat-row').forEach(row => {
+              row.addEventListener('click', () => {
+                document.dispatchEvent(new CustomEvent('select-chat', { detail: { sessionId: row.dataset.id } }));
+              });
+            });
+          } else {
+            listEl.innerHTML = '<div class="project-tab-placeholder">No chats yet. Start a new chat while this project is active.</div>';
+          }
+        } catch (e) {
+          document.getElementById('project-tab-chats').innerHTML = `<div class="project-tab-placeholder">Failed to load chats: ${e.message}</div>`;
+        }
+      }
     });
   });
   container.querySelector('#project-open-editor-btn')?.addEventListener('click', () => {

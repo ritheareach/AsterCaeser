@@ -1014,7 +1014,11 @@ function _renderSessionListImpl() {
 
   // Get saved order from localStorage
   const savedOrder = Storage.get('session-order');
+  const activeProjectId = Storage.get('astercaeser-active-project', null);
   let orderedSessions = sessions.filter(s => !s.archived && s.folder !== 'Assistant' && !_isIncognitoSession(s.id) && (s.name || '').trim() !== 'Nobody' && (s.name || '').trim() !== 'Incognito');
+  if (activeProjectId) {
+    orderedSessions = orderedSessions.filter(s => s.project_id === activeProjectId);
+  }
 
   if (savedOrder) {
     try {
@@ -2164,6 +2168,10 @@ export async function materializePendingSession() {
   }
   if (pending.endpointId) {
     fd.append('endpoint_id', pending.endpointId);
+  }
+  const activeProjectId = localStorage.getItem('astercaeser-active-project');
+  if (activeProjectId) {
+    fd.append('project_id', activeProjectId);
   }
 
   let res;
@@ -3445,6 +3453,27 @@ export function setSessionHasDocs(sessionId, hasDocs) {
     renderSessionList();
   }
 }
+
+// Wire project-changed event to re-render chat list
+document.addEventListener('project-changed', () => { loadSessions(); });
+document.addEventListener('select-chat', (e) => {
+  if (e.detail && e.detail.sessionId) {
+    selectSession(e.detail.sessionId);
+  }
+});
+document.addEventListener('start-chat', (e) => {
+  if (e.detail && e.detail.projectId) {
+    Storage.set('astercaeser-active-project', e.detail.projectId);
+  }
+  const newChatBtn = document.getElementById('sidebar-new-chat-btn');
+  if (newChatBtn) newChatBtn.click();
+  // Switch to chat view if needed
+  const chatSection = document.getElementById('sessions-section');
+  if (chatSection && chatSection.classList.contains('collapsed')) {
+    const header = chatSection.querySelector('.section-header-flex');
+    if (header) header.click();
+  }
+});
 
 // Export all functions to window for use in main app
 const sessionModule = {

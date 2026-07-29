@@ -40991,3 +40991,8 @@ body.theme-frosted .modal {
 .preview-loading, .preview-error { text-align: center; padding: 40px; opacity: 0.4; }
 .preview-iframe { width: 100%; height: 100%; border: none; background: #fff; }
 .preview-typst-fallback { white-space: pre-wrap; font-family: 'Fira Code', monospace; font-size: 12px; }
+
+.project-chat-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; border-radius: 6px; transition: background 0.1s; }
+.project-chat-row:hover { background: color-mix(in srgb, var(--accent, var(--red)) 8%, transparent); }
+.project-chat-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-chat-date { font-size: 10px; opacity: 0.4; flex-shrink: 0; }
