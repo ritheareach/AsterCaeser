@@ -1212,7 +1212,7 @@ def setup_workspace_routes():
 
         if not session:
             try:
-                shell = os.environ.get("SHELL", "/bin/bash")
+                shell = shutil.which("fish") or os.environ.get("SHELL") or "/bin/bash"
                 process = await _start_terminal_process(shell, root)
             except Exception as exc:
                 await websocket.send_json({"type": "error", "message": f"Failed to start shell: {exc}"})
@@ -1225,6 +1225,7 @@ def setup_workspace_routes():
                 "ws": websocket,
                 "cols": 80,
                 "rows": 24,
+                "shell": shell,
             }
             active_sessions[session_id] = session
             asyncio.create_task(run_session_reader(session_id))
@@ -1235,7 +1236,8 @@ def setup_workspace_routes():
             _resize_terminal(session["process"], session["cols"], session["rows"])
 
         # Send shell name to client
-        shell_name = os.path.basename(os.environ.get("SHELL", "/bin/bash"))
+        shell = session.get("shell") or shutil.which("fish") or os.environ.get("SHELL") or "/bin/bash"
+        shell_name = os.path.basename(shell)
         try:
             await websocket.send_json({"type": "init", "shell": shell_name})
         except Exception:

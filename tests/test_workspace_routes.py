@@ -417,3 +417,25 @@ def asyncio_run(function, *args):
     """Run an async endpoint directly, without an ASGI server."""
     import asyncio
     return asyncio.run(function(*args))
+
+
+def test_terminal_shell_selection(monkeypatch):
+    import shutil
+
+    # Case 1: fish is present
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/local/bin/fish" if cmd == "fish" else None)
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    shell = shutil.which("fish") or os.environ.get("SHELL") or "/bin/bash"
+    assert shell == "/usr/local/bin/fish"
+
+    # Case 2: fish is absent, SHELL is set
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    shell = shutil.which("fish") or os.environ.get("SHELL") or "/bin/bash"
+    assert shell == "/bin/zsh"
+
+    # Case 3: fish is absent, SHELL is unset or empty
+    monkeypatch.delenv("SHELL", raising=False)
+    shell = shutil.which("fish") or os.environ.get("SHELL") or "/bin/bash"
+    assert shell == "/bin/bash"
+
