@@ -120,7 +120,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "img-src 'self' data: blob: https:; "
                 "media-src 'self' blob:; "
                 "connect-src 'self'; "
-                "frame-src 'self'; "
+                "frame-src 'self' http: https:; "
                 "frame-ancestors 'none'"
             )
         return response

@@ -41,12 +41,9 @@ def run(shell: str, root: str) -> int:
     try:
         child = subprocess.Popen(
             _command(shell),
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
             cwd=root,
             env=environment,
-            start_new_session=True,
+            preexec_fn=lambda: os.login_tty(slave_fd),
         )
     finally:
         os.close(slave_fd)

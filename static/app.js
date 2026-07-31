@@ -3612,7 +3612,18 @@ function startAsterCaeserApp() {
 
   // Initialize all event listeners
   try { initializeEventListeners(); } catch(e) { console.error('Event init error:', e); }
-  try { initCodeEditor(); } catch (e) { console.error('Code editor init error:', e); }
+  try {
+    initCodeEditor();
+    const editorWasOpen = localStorage.getItem('astercaeser-editor-open') === 'true';
+    const activeProject = Storage.get('astercaeser-active-project', null);
+    if (editorWasOpen && activeProject) {
+      document.dispatchEvent(new CustomEvent('open-editor', {
+        detail: {
+          projectId: activeProject,
+        }
+      }));
+    }
+  } catch (e) { console.error('Code editor init error:', e); }
 
   // Reveal the toolbar now that all toggle/overflow state is resolved
   // (hidden via inline style="visibility:hidden" in HTML to prevent FOUC)

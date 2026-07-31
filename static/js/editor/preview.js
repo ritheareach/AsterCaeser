@@ -83,6 +83,11 @@ export function validateWebPreviewUrl(value) {
   try {
     const url = new URL(String(value || '').trim());
     if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) return null;
+    if (url.hostname === '0.0.0.0') {
+      url.hostname = '127.0.0.1';
+    } else if (url.hostname === '[::]') {
+      url.hostname = '[::1]';
+    }
     return url.href;
   } catch (_) {
     return null;
@@ -323,9 +328,12 @@ export function createPreviewPanel({
   const external = createElement('button', 'editor-preview-action', 'Open external');
   external.type = 'button';
   external.disabled = true;
+  const ratioToggle = createElement('button', 'editor-preview-action', 'Scale: Full');
+  ratioToggle.type = 'button';
+  ratioToggle.hidden = true;
   const closeButton = createElement('button', 'editor-preview-action editor-preview-close', 'Close');
   closeButton.type = 'button';
-  actions.append(reload, external, closeButton);
+  actions.append(reload, external, ratioToggle, closeButton);
   toolbar.append(label, status, urlInput, actions);
   const body = createElement('div', 'editor-preview-content');
   root.append(toolbar, body);
@@ -337,6 +345,8 @@ export function createPreviewPanel({
   let renderEpoch = 0;
   let typstUrls = [];
   let closed = false;
+  let is169 = false;
+  let resizeObserver = null;
 
   function revokeTypstUrls() {
     typstUrls.forEach(url => { try { URL.revokeObjectURL(url); } catch (_) {} });
@@ -357,10 +367,17 @@ export function createPreviewPanel({
     root.hidden = false;
     label.textContent = title;
     urlInput.hidden = nextMode !== 'web';
+    ratioToggle.hidden = nextMode !== 'web';
     external.disabled = nextMode !== 'web' || !activeUrl;
   }
 
   function clearBody() {
+    body.style.removeProperty('display');
+    body.style.removeProperty('flex-direction');
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
     revokeTypstUrls();
     body.replaceChildren();
   }
@@ -482,12 +499,53 @@ export function createPreviewPanel({
     }
   }
 
+  function updateFrameScale(container, frame) {
+    if (!is169) {
+      frame.style.width = '100%';
+      frame.style.height = '100%';
+      frame.style.flex = '1 1 auto';
+      frame.style.removeProperty('transform');
+      frame.style.removeProperty('transform-origin');
+      frame.style.removeProperty('min-height');
+
+      container.style.removeProperty('height');
+      container.style.display = 'flex';
+      container.style.flexDirection = 'column';
+      container.style.flex = '1 1 auto';
+      container.style.minHeight = '0';
+      container.style.removeProperty('position');
+      container.style.removeProperty('overflow');
+      return;
+    }
+    const containerWidth = container.clientWidth;
+    const scale = containerWidth / 1280;
+    frame.style.width = '1280px';
+    frame.style.height = '720px';
+    frame.style.transform = `scale(${scale})`;
+    frame.style.transformOrigin = 'top left';
+    frame.style.minHeight = 'unset';
+    frame.style.removeProperty('flex');
+
+    container.style.height = `${720 * scale}px`;
+    container.style.display = 'block';
+    container.style.position = 'relative';
+    container.style.overflow = 'hidden';
+    container.style.flex = '0 0 auto';
+    container.style.removeProperty('min-height');
+  }
+
   function renderWebFrame(url) {
     clearBody();
+    body.style.display = 'flex';
+    body.style.flexDirection = 'column';
+
+    const container = document.createElement('div');
+    container.className = 'editor-web-preview-container';
+
     const frame = document.createElement('iframe');
     frame.className = 'editor-web-preview-frame';
     frame.title = `Web preview: ${url}`;
-    frame.sandbox = 'allow-scripts';
+    frame.sandbox = 'allow-scripts allow-forms allow-same-origin allow-popups allow-modals';
     frame.referrerPolicy = 'no-referrer';
     frame.setAttribute('allow', '');
     frame.addEventListener('load', () => emitStatus('ready', 'Web preview loaded'));
@@ -496,7 +554,17 @@ export function createPreviewPanel({
       emitStatus('error', 'Web preview failed to load');
     });
     frame.src = url;
-    body.append(frame);
+    container.append(frame);
+    body.append(container);
+
+    if (resizeObserver) {
+      resizeObserver.disconnect();
+    }
+    resizeObserver = new ResizeObserver(() => {
+      updateFrameScale(container, frame);
+    });
+    resizeObserver.observe(container);
+    updateFrameScale(container, frame);
   }
 
   function openWebPreview(value) {
@@ -558,6 +626,15 @@ export function createPreviewPanel({
 
   reload.addEventListener('click', () => { void refresh(); });
   closeButton.addEventListener('click', close);
+  ratioToggle.addEventListener('click', () => {
+    is169 = !is169;
+    ratioToggle.textContent = is169 ? 'Scale: 16:9' : 'Scale: Full';
+    const container = body.querySelector('.editor-web-preview-container');
+    const frame = body.querySelector('.editor-web-preview-frame');
+    if (container && frame) {
+      updateFrameScale(container, frame);
+    }
+  });
   external.addEventListener('click', () => {
     if (!activeUrl) return;
     try {

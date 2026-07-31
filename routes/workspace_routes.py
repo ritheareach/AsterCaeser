@@ -565,6 +565,53 @@ def _close_terminal_pty(process) -> None:
         process._pty_master_fd = None
 
 
+active_sessions = {}
+
+async def run_session_reader(session_id: str):
+    session = active_sessions.get(session_id)
+    if not session:
+        return
+    process = session["process"]
+    try:
+        while True:
+            try:
+                data = await _terminal_read(process)
+            except OSError:
+                break
+            if not data:
+                break
+            
+            # Save history
+            session["output_history"].extend(data)
+            if len(session["output_history"]) > 100000:
+                session["output_history"] = session["output_history"][-100000:]
+                
+            # Broadcast to active WebSocket
+            ws = session.get("ws")
+            if ws:
+                try:
+                    await ws.send_bytes(data)
+                except Exception:
+                    session["ws"] = None
+    finally:
+        # Cleanup session when process exits
+        if session_id in active_sessions:
+            del active_sessions[session_id]
+        if process.stdin:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+        _close_terminal_pty(process)
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+
+
 def setup_workspace_routes():
     router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 
@@ -1146,56 +1193,80 @@ def setup_workspace_routes():
             await websocket.close(code=1011)
             return
 
+        session_id = websocket.query_params.get("session_id", f"{pid}-default")
+
         try:
             await websocket.accept()
-            shell = os.environ.get("SHELL", "/bin/bash")
-            process = await _start_terminal_process(shell, root)
-        except Exception as exc:
-            await websocket.send_json({"type": "error", "message": f"Failed to start shell: {exc}"})
-            await websocket.close()
+        except Exception:
             return
 
-        async def output():
-            while True:
-                try:
-                    data = await _terminal_read(process)
-                except OSError:  # PTYs raise EIO once their child exits.
-                    return
-                if not data:
-                    return
-                await websocket.send_bytes(data)
+        # Check if session exists and is alive
+        session = active_sessions.get(session_id)
+        if session and session["process"].returncode is not None:
+            session = None
+            if session_id in active_sessions:
+                del active_sessions[session_id]
 
-        async def input_():
+        if not session:
+            try:
+                shell = os.environ.get("SHELL", "/bin/bash")
+                process = await _start_terminal_process(shell, root)
+            except Exception as exc:
+                await websocket.send_json({"type": "error", "message": f"Failed to start shell: {exc}"})
+                await websocket.close()
+                return
+
+            session = {
+                "process": process,
+                "output_history": bytearray(),
+                "ws": websocket,
+                "cols": 80,
+                "rows": 24,
+            }
+            active_sessions[session_id] = session
+            asyncio.create_task(run_session_reader(session_id))
+        else:
+            session["ws"] = websocket
+            if session["output_history"]:
+                await websocket.send_bytes(bytes(session["output_history"]))
+            _resize_terminal(session["process"], session["cols"], session["rows"])
+
+        # Send shell name to client
+        shell_name = os.path.basename(os.environ.get("SHELL", "/bin/bash"))
+        try:
+            await websocket.send_json({"type": "init", "shell": shell_name})
+        except Exception:
+            pass
+
+        try:
             while True:
                 message = await websocket.receive()
                 if message.get("bytes") is not None:
-                    await _terminal_write(process, message["bytes"])
+                    await _terminal_write(session["process"], message["bytes"])
                 elif message.get("text"):
                     payload = json.loads(message["text"])
                     if payload.get("type") == "input" and isinstance(payload.get("data"), str):
-                        await _terminal_write(process, payload["data"].encode())
+                        await _terminal_write(session["process"], payload["data"].encode())
                     elif payload.get("type") == "resize":
-                        _resize_terminal(process, payload.get("cols"), payload.get("rows"))
-
-        readers = [asyncio.create_task(output()), asyncio.create_task(input_())]
-        try:
-            await asyncio.wait(readers, return_when=asyncio.FIRST_COMPLETED)
+                        session["cols"] = payload.get("cols", session["cols"])
+                        session["rows"] = payload.get("rows", session["rows"])
+                        _resize_terminal(session["process"], session["cols"], session["rows"])
+                    elif payload.get("type") == "kill":
+                        process = session["process"]
+                        if session_id in active_sessions:
+                            del active_sessions[session_id]
+                        if process.stdin:
+                            try: process.stdin.close()
+                            except Exception: pass
+                        _close_terminal_pty(process)
+                        if process.returncode is None:
+                            process.terminate()
+                        break
         except WebSocketDisconnect:
             pass
         finally:
-            for task in readers:
-                task.cancel()
-            if process.stdin:
-                process.stdin.close()
-            _close_terminal_pty(process)
-            await asyncio.gather(*readers, return_exceptions=True)
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=2)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
+            if session_id in active_sessions and active_sessions[session_id]["ws"] == websocket:
+                active_sessions[session_id]["ws"] = None
             try:
                 await websocket.close()
             except Exception:

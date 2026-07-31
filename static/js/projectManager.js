@@ -387,7 +387,7 @@ function renderWorkspace(container) {
     if (!editorProject) return;
     document.dispatchEvent(new CustomEvent('open-editor', { detail: { projectId: editorProject.id, workspaceId: editorProject.workspace_id, path: editorProject.path, project: editorProject } }));
   }));
-  container.querySelectorAll('[data-action="new-workspace"]').forEach(button => button.addEventListener('click', openWorkspaceModal));
+  container.querySelectorAll('[data-action="new-workspace"]').forEach(button => button.addEventListener('click', () => openWorkspaceModal()));
   container.querySelectorAll('[data-action="new-project"]').forEach(button => button.addEventListener('click', () => openProjectModal(button.dataset.workspaceId)));
   container.querySelectorAll('[data-action="edit-workspace"]').forEach(button => button.addEventListener('click', () => openWorkspaceModal(state.workspacesById.get(button.dataset.workspaceId))));
   container.querySelectorAll('[data-action="delete-workspace"]').forEach(button => button.addEventListener('click', () => deleteWorkspace(button.dataset.workspaceId)));
@@ -590,7 +590,7 @@ function setFormError(form, message) {
 }
 
 function openWorkspaceModal(workspace = null) {
-  const isEdit = !!workspace;
+  const isEdit = !!(workspace && typeof workspace === 'object' && !(workspace instanceof Event));
   const { modal, close } = openModal({
     title: isEdit ? 'Edit workspace' : 'New workspace',
     body: `<form class="workspace-form"><label>Workspace name<input name="name" required maxlength="120" value="${esc(workspace?.name || '')}" autocomplete="off"></label><label>Description<textarea name="description" rows="3" maxlength="500">${esc(workspace?.description || '')}</textarea></label><div class="workspace-form-actions"><button type="button" class="workspace-secondary-btn" data-action="cancel">Cancel</button><button type="submit" class="workspace-primary-btn">${isEdit ? 'Save workspace' : 'Create workspace'}</button></div></form>`,

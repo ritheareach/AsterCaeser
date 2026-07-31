@@ -5,8 +5,12 @@ const XTERM_STYLESHEET = '/static/js/vendor/xterm.css';
 
 function terminalUrl(context) {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${window.location.host}/api/workspace/${encodeURIComponent(context.workspaceId)}`
+  let url = `${scheme}//${window.location.host}/api/workspace/${encodeURIComponent(context.workspaceId)}`
     + `/project/${encodeURIComponent(context.projectId)}/terminal`;
+  if (context.terminalSessionId) {
+    url += `?session_id=${encodeURIComponent(context.terminalSessionId)}`;
+  }
+  return url;
 }
 
 function ensureStylesheet() {
@@ -161,6 +165,10 @@ export class ProjectTerminal {
         const payload = JSON.parse(event.data);
         if (payload.type === 'error') {
           this._fail(payload.message || 'Terminal server error');
+          return;
+        }
+        if (payload.type === 'init') {
+          this.onState?.({ kind: 'init', shell: payload.shell });
           return;
         }
       } catch (_) { /* A text frame may be terminal output; render it below. */ }
