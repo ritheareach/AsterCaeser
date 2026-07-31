@@ -1170,6 +1170,29 @@ def _format_upstream_error(status: int, body: bytes | str, url: str) -> str:
         return f"{provider} is having an outage (HTTP {status})." + (f" {detail}" if detail else "")
     return f"{provider} returned HTTP {status}" + (f": {detail}" if detail else "")
 
+
+def _is_transient_gateway_failure(status: int, body: bytes | str) -> bool:
+    """True when a non-2xx response is a gateway-wrapped TRANSIENT upstream
+    failure rather than a genuine request bug.
+
+    Provider gateways (e.g. opencode.ai Zen/Go) sometimes wrap an upstream
+    model outage as HTTP 400 with a body like ``{"error":{"message":"Error
+    from provider (Console Go): Upstream request failed", "type":
+    "invalid_request_error"}}``. That 400 means the gateway could not reach
+    its upstream — the request itself is fine — so it deserves the same
+    retry treatment as 429/5xx. Generic 400s (schema/parameter errors) are
+    NOT transient and stay non-retried.
+    """
+    if status != 400:
+        return False
+    if isinstance(body, bytes):
+        try:
+            body = body.decode("utf-8", errors="replace")
+        except Exception:
+            body = str(body)
+    return "upstream request failed" in (body or "").lower()
+
+
 # Models that require max_completion_tokens instead of max_tokens
 _MAX_COMPLETION_TOKENS_MODELS = {"o1", "o3", "o4", "gpt-4.5", "gpt-5"}
 
@@ -2078,6 +2101,16 @@ async def llm_call_async(
                 if r.status_code in (429, 502, 503, 504) and attempt < max_retries:
                     await asyncio.sleep(LLMConfig.RETRY_DELAY)
                     continue
+                if (
+                    _is_transient_gateway_failure(r.status_code, r.text)
+                    and attempt < max_retries
+                ):
+                    logger.info(
+                        f"Transient gateway failure (HTTP {r.status_code}), retrying "
+                        f"{target_url} (attempt {attempt}/{max_retries})"
+                    )
+                    await asyncio.sleep(LLMConfig.RETRY_DELAY)
+                    continue
                 raise HTTPException(r.status_code, friendly)
             logger.info(f"LLM async call to {target_url} succeeded in {duration:.2f}s (attempt {attempt})")
             _clear_host_dead(target_url)
@@ -2147,7 +2180,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
                             timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
                             tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
-                            tool_choice_none: bool = False):
+                            tool_choice_none: bool = False, _retries_left: int = 1):
     """Stream LLM responses with improved error handling.
 
     Yields SSE chunks:
@@ -2545,6 +2578,27 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
             _clear_host_dead(target_url)
             if r.status_code != 200:
                 raw = (await r.aread()).decode(errors="replace")
+                if (
+                    _is_transient_gateway_failure(r.status_code, raw)
+                    and _retries_left > 0
+                ):
+                    # Gateway-wrapped upstream outage (e.g. opencode.ai's
+                    # "Upstream request failed" 400). The request itself is
+                    # fine — retry the whole stream once before surfacing.
+                    logger.info(
+                        f"Transient gateway failure from {target_url} (HTTP {r.status_code}); "
+                        f"retrying stream ({_retries_left} retries left)"
+                    )
+                    await asyncio.sleep(LLMConfig.RETRY_DELAY)
+                    async for chunk in _stream_llm_inner(
+                        url, model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        headers=headers, timeout=timeout, prompt_type=prompt_type,
+                        tools=tools, session_id=session_id, tool_choice_none=tool_choice_none,
+                        _retries_left=_retries_left - 1,
+                    ):
+                        yield chunk
+                    return
                 friendly = _format_upstream_error(r.status_code, raw, target_url)
                 yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
                 return

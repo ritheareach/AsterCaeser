@@ -40,6 +40,12 @@ DEFAULT_SETTINGS = {
     "image_gen_enabled": False,
     "image_model": "",
     "image_quality": "medium",
+    # Built-in Browser (Playwright MCP). Headless keeps the agent's browser
+    # invisible; set browser_headless=false once to pop a real window so you
+    # can log into a site — the login persists in the browser profile
+    # (browser_user_data_dir; default data/browser-profile) across sessions.
+    "browser_headless": True,
+    "browser_user_data_dir": "",
     "vision_model": "",
     "vision_enabled": True,
     # Ordered fallback chain for the Vision model (image analysis, OCR, tagging).

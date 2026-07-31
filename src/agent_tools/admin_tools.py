@@ -669,6 +669,21 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
                     s[key] = resolved["model"]
                     value = resolved["model"]
             save_settings(s)
+            if key in ("browser_headless", "browser_user_data_dir"):
+                # The built-in browser MCP reads these at launch, so restart
+                # it live instead of forcing an app restart: the user flips
+                # browser_headless off once, signs in (persistent profile),
+                # and flips it back on.
+                manager = get_mcp_manager()
+                if manager is not None:
+                    try:
+                        restarted = await manager._reconnect_builtin("builtin_browser")
+                    except Exception as e:
+                        restarted = False
+                        logger.error(f"Browser MCP reconnect after setting change failed: {e}")
+                    if restarted:
+                        return {"response": f"Set {key} = {value}. Browser restarted with the new profile settings.", "exit_code": 0}
+                    return {"response": f"Set {key} = {value}. (Browser MCP restart failed — restart AsterCaeser to apply.)", "exit_code": 0}
             if key.endswith("_model") and s.get(f"{key[:-6]}_endpoint_id"):
                 return {"response": f"Set {key} = {value} (endpoint {s.get(f'{key[:-6]}_endpoint_id')}).", "exit_code": 0}
             return {"response": f"Set {key} = {value}.", "exit_code": 0}

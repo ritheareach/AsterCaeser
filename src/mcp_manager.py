@@ -57,6 +57,28 @@ def _sanitize_schema_token(value: Any, limit: int = _MCP_TOKEN_MAX) -> str:
     return text
 
 
+def _normalize_mcp_params(input_schema: Any) -> Dict:
+    """Coerce an MCP tool's input_schema into a valid OpenAI function schema.
+
+    Some MCP servers (including @playwright/mcp) declare tools with NO
+    parameters as an EMPTY object (``{}``) instead of a proper JSON Schema.
+    OpenAI-compatible APIs require ``parameters`` to be a schema object with a
+    ``type``; sending ``{}`` makes strict gateways (e.g. opencode.ai Zen/Go)
+    reject the whole request with HTTP 400 "Upstream request failed". Normalize:
+      - non-dict / empty / type-less → {"type": "object", "properties": {}}
+      - otherwise pass through untouched (deep-copied to avoid mutation).
+    """
+    if not isinstance(input_schema, dict) or not input_schema:
+        return {"type": "object", "properties": {}}
+    if isinstance(input_schema.get("type"), str) and input_schema["type"]:
+        return json.loads(json.dumps(input_schema))
+    if "properties" in input_schema or "additionalProperties" in input_schema:
+        fixed = json.loads(json.dumps(input_schema))
+        fixed.setdefault("type", "object")
+        return fixed
+    return {"type": "object", "properties": {}}
+
+
 def _format_mcp_params(input_schema: Any) -> str:
     """Render an MCP tool's JSON-Schema inputs as a compact prompt hint.
 
@@ -537,7 +559,38 @@ class McpManager:
     async def _reconnect_builtin(self, server_id: str) -> bool:
         """Tear down and reconnect a crashed builtin MCP server."""
         import sys
-        from src.builtin_mcp import _BUILTIN_SERVERS, builtin_python_env
+        from src.builtin_mcp import (
+            _BUILTIN_SERVERS,
+            _BUILTIN_NPX_SERVERS,
+            builtin_python_env,
+            npx_launch_args,
+            _find_npx,
+        )
+
+        if server_id in _BUILTIN_NPX_SERVERS:
+            # NPX-based builtins (e.g. the Playwright browser) are launched
+            # with the CURRENT settings (headless flag, persistent profile),
+            # so a reconnect also picks up browser_headless /
+            # browser_user_data_dir changes made at runtime.
+            name = _BUILTIN_NPX_SERVERS[server_id]["name"]
+            args = npx_launch_args(server_id)
+            if not args:
+                return False
+            await self.disconnect_server(server_id)
+            try:
+                ok = await self.connect_server(
+                    server_id=server_id,
+                    name=name,
+                    transport="stdio",
+                    command=_find_npx(),
+                    args=args,
+                )
+                if ok:
+                    logger.info(f"Reconnected builtin NPX MCP server: {name}")
+                return ok
+            except Exception as e:
+                logger.error(f"Failed to reconnect builtin NPX MCP server {name}: {e}")
+                return False
 
         if server_id not in _BUILTIN_SERVERS:
             return False
@@ -593,7 +646,7 @@ class McpManager:
                     "function": {
                         "name": qualified,
                         "description": f"[MCP:{label}] {tool['description']}",
-                        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                        "parameters": _normalize_mcp_params(tool.get("input_schema")),
                     },
                 }
                 schemas.append(schema)
@@ -692,6 +745,13 @@ class McpManager:
             identity = self._connections.get(sid, {}).get("identity", "")
             label = f"{server_name} ({identity})" if identity else server_name
             lines.append(f"\n**{label}:**")
+            if sid == "builtin_browser":
+                lines.append(
+                    "  (browser profile persists between sessions; if a page shows a "
+                    "login form, use manage_settings to set browser_headless=false so "
+                    "the user can sign in once in the visible browser window, then "
+                    "set it back to true)"
+                )
             for t in server_tools:
                 # Truncate long descriptions
                 desc = t['description'][:120] + '...' if len(t['description']) > 120 else t['description']

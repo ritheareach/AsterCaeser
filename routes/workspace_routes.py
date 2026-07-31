@@ -1267,7 +1267,7 @@ def setup_workspace_routes():
                         if process.returncode is None:
                             process.terminate()
                         break
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
             if session_id in active_sessions and active_sessions[session_id]["ws"] == websocket:

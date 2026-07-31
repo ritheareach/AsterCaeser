@@ -38,6 +38,18 @@ Open `http://localhost:7000` when the containers are healthy. The first admin pa
 
 Native installs, GPU notes, Windows/macOS instructions, HTTPS, and configuration live in the [setup guide](docs/setup.md).
 
+## Built-in MCP servers
+
+AsterCaeser auto-registers several built-in MCP servers: email, memory, RAG, image generation, and a Playwright-based **Browser** (`builtin_browser` — available to agents as `mcp__builtin_browser__browser_*` tools).
+
+The browser uses a **persistent profile** (`browser_user_data_dir` setting; default `data/browser-profile`), so logins survive restarts and the agent can read pages behind auth walls (e.g. a local dashboard). To sign into a site once:
+
+1. Tell the agent `manage_settings` `set browser_headless false` — a visible browser window appears (or the change is applied on next startup).
+2. Ask the agent to open the site with the browser and log in.
+3. Set `browser_headless` back to `true` — the login persists in the profile.
+
+Browser tools are only available when the `@playwright/mcp` npm package is cached (run `npx -y @playwright/mcp@latest --version` once to pre-install it).
+
 ## Features
 
 - **Chat + Agents** — local/API models, tools, MCP, files, shell, skills, and memory.

@@ -148,10 +148,17 @@ const state = {
   noticeTimer: null,
   previewTimer: null,
   externalPollTimer: null,
-  externalPollInFlight: false,
   terminalSessions: [],
   activeTerminalSessionId: null,
+  toolsPosition: 'bottom',
+  draggedPanelName: null,
+  // Latest text snapshot streamed up from the web preview iframe via the
+  // postMessage bridge (see sendAiMessage). The webview is cross-origin, so
+  // the iframe's DOM can't be read directly — the embedded page sends it.
+  webviewSnapshot: null,
 };
+
+let aiMirrorObserver = null;
 
 const editorTheme = EditorView.theme({
   '&': {
@@ -417,6 +424,7 @@ function mountRoot() {
       <div class="code-editor-panel-tabs" role="tablist" aria-label="Project tools">
         <button id="ce-panel-tab-terminal" class="ce-panel-tab" type="button" role="tab" aria-controls="ce-panel-terminal" data-editor-panel="terminal">Terminal</button>
         <button id="ce-panel-tab-search" class="ce-panel-tab" type="button" role="tab" aria-controls="ce-panel-search" data-editor-panel="search">Search</button>
+        <button id="ce-panel-tab-ai" class="ce-panel-tab" type="button" role="tab" aria-controls="ce-panel-ai" data-editor-panel="ai">AI</button>
         <button class="ce-panel-tab" type="button" data-editor-panel-action="close-terminal" title="Close terminal session" aria-label="Close terminal session" style="margin-left:auto">Close terminal</button>
       </div>
       <div id="ce-panel-terminal" class="code-editor-panel-content" data-editor-panel-slot="terminal" role="tabpanel" aria-labelledby="ce-panel-tab-terminal" style="padding:0;overflow:hidden;position:relative;display:flex;flex-direction:row">
@@ -431,10 +439,16 @@ function mountRoot() {
         <div id="ce-terminal-status" role="status" aria-live="polite" style="position:absolute;left:8px;top:5px;font-size:10px;opacity:.65;pointer-events:none;z-index:10"></div>
       </div>
       <div id="ce-panel-search" class="code-editor-panel-content" data-editor-panel-slot="search" role="tabpanel" aria-labelledby="ce-panel-tab-search" hidden></div>
+      <div id="ce-panel-ai" class="code-editor-panel-content" data-editor-panel-slot="ai" role="tabpanel" aria-labelledby="ce-panel-tab-ai" hidden style="padding:0;overflow:hidden;position:relative;display:flex;flex-direction:column;height:100%">
+        <div id="ce-ai-messages" style="flex:1;min-height:0;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:12px;font-size:12px;line-height:1.45;box-sizing:border-box"></div>
+        <div id="ce-ai-input-wrap" style="display:flex;background:var(--panel);border-top:1px solid var(--border);padding:6px 8px;gap:6px;align-items:center;flex-shrink:0;height:42px;box-sizing:border-box">
+          <textarea id="ce-ai-textarea" placeholder="Ask AI about your code..." style="flex:1;height:30px;resize:none;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:12px;outline:none;font-family:inherit;box-sizing:border-box;line-height:1.35"></textarea>
+          <button id="ce-ai-new" style="padding:0px 10px;height:30px;font-size:12px;display:flex;align-items:center;background:var(--panel);border:1px solid var(--border);color:var(--fg);border-radius:4px;cursor:pointer;font-weight:500;white-space:nowrap" title="Start new session">New Chat</button>
+          <button id="ce-ai-send" style="padding:0px 12px;height:30px;font-size:12px;display:flex;align-items:center;background:var(--panel);border:1px solid var(--border);color:var(--fg);border-radius:4px;cursor:pointer;font-weight:500" title="Send message">Send</button>
+        </div>
+      </div>
     </section>
-    <div id="code-editor-panel-slots" hidden aria-label="Editor extension slots">
-      <div data-editor-panel-slot="ai"></div>
-    </div>
+    <div id="code-editor-panel-slots" hidden aria-label="Editor extension slots"></div>
     <div class="code-editor-layout-menu" id="ce-layout-menu" role="menu" hidden aria-label="Editor layout">
       <label class="ce-layout-tab-size" for="ce-tab-size"><span>Tab size</span>
         <select id="ce-tab-size" aria-label="Tab size">
@@ -462,10 +476,127 @@ function mountRoot() {
   root.querySelector('[data-editor-action="help"]')?.addEventListener('click', showKeyboardHelp);
   root.querySelector('[data-editor-action="fullscreen"]')?.addEventListener('click', () => { void toggleFullscreen(); });
   root.querySelector('[data-editor-action="close"]')?.addEventListener('click', () => { void closeEditor(); });
+  let dragOverlay = root.querySelector('#ce-drag-overlay');
+  if (!dragOverlay) {
+    dragOverlay = window.document.createElement('div');
+    dragOverlay.id = 'ce-drag-overlay';
+    dragOverlay.style.cssText = 'position:absolute;inset:0;z-index:99999;display:none;pointer-events:auto;box-sizing:border-box;transition:background 120ms ease, border 120ms ease;';
+    root.appendChild(dragOverlay);
+  }
+
   root.querySelectorAll('[data-editor-panel]').forEach(button => {
     button.addEventListener('click', () => showPanel(button.dataset.editorPanel));
+    button.setAttribute('draggable', 'true');
+    button.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', 'editor-panel-tab');
+      e.dataTransfer.effectAllowed = 'move';
+      state.draggedPanelName = button.dataset.editorPanel;
+      setTimeout(() => {
+        if (dragOverlay) {
+          dragOverlay.style.display = 'block';
+          dragOverlay.style.border = '2px dashed rgba(236, 106, 92, 0.4)';
+          dragOverlay.style.background = 'rgba(236, 106, 92, 0.02)';
+        }
+      }, 0);
+    });
+    button.addEventListener('dragend', () => {
+      state.draggedPanelName = null;
+      if (dragOverlay) {
+        dragOverlay.style.display = 'none';
+        dragOverlay.style.border = 'none';
+        dragOverlay.style.background = 'transparent';
+      }
+    });
   });
+
+  dragOverlay.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const isTop = e.clientY < 52;
+    const isBottom = e.clientY > window.innerHeight - 200;
+    if (isTop) {
+      dragOverlay.style.border = 'none';
+      dragOverlay.style.borderTop = '8px dashed var(--accent, #ec6a5c)';
+      dragOverlay.style.background = 'linear-gradient(to bottom, rgba(236, 106, 92, 0.12) 0%, transparent 100%)';
+    } else if (isBottom) {
+      dragOverlay.style.border = 'none';
+      dragOverlay.style.borderBottom = '8px dashed var(--accent, #ec6a5c)';
+      dragOverlay.style.background = 'linear-gradient(to top, rgba(236, 106, 92, 0.12) 0%, transparent 100%)';
+    } else {
+      dragOverlay.style.border = 'none';
+      dragOverlay.style.borderRight = '8px dashed var(--accent, #ec6a5c)';
+      dragOverlay.style.background = 'linear-gradient(to left, rgba(236, 106, 92, 0.12) 0%, transparent 100%)';
+    }
+  });
+
+  dragOverlay.addEventListener('dragleave', () => {
+    if (dragOverlay) {
+      dragOverlay.style.border = '2px dashed rgba(236, 106, 92, 0.4)';
+      dragOverlay.style.background = 'rgba(236, 106, 92, 0.02)';
+    }
+  });
+
+  dragOverlay.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (dragOverlay) {
+      dragOverlay.style.display = 'none';
+    }
+    const data = e.dataTransfer.getData('text/plain');
+    if (data === 'editor-panel-tab') {
+      const isTop = e.clientY < 52;
+      const isBottom = e.clientY > window.innerHeight - 200;
+      if (isTop && state.draggedPanelName) {
+        const name = state.draggedPanelName;
+        const path = `virtual://${name}`;
+        if (!state.documents.has(path)) {
+          state.documents.set(path, {
+            path: path,
+            content: '',
+            savedContent: '',
+            loaded: true,
+            loading: false,
+            dirty: false,
+            state: EditorState.create({ extensions: [] }),
+            languageName: name.toUpperCase()
+          });
+        }
+        void openAt(path);
+      } else {
+        state.toolsPosition = isBottom ? 'bottom' : 'side';
+        applyToolsPosition();
+        applyActiveView();
+        persist();
+      }
+    }
+  });
+
   root.querySelector('[data-editor-panel-action="close-terminal"]')?.addEventListener('click', closeTerminalPanel);
+  root.querySelector('#ce-terminal-add')?.addEventListener('click', () => {
+    const newSession = createTerminalSession();
+    selectTerminalSession(newSession.id);
+  });
+
+  const aiNew = root.querySelector('#ce-ai-new');
+  if (aiNew) {
+    aiNew.addEventListener('click', () => {
+      window.document.dispatchEvent(new CustomEvent('start-chat', { detail: { projectId: state.context?.projectId } }));
+      const targetLog = getRootPart('#ce-ai-messages');
+      if (targetLog) targetLog.replaceChildren();
+      notice('Started a new chat session.');
+      getRootPart('#ce-ai-textarea')?.focus();
+    });
+  }
+
+  const aiSend = root.querySelector('#ce-ai-send');
+  const aiTextarea = root.querySelector('#ce-ai-textarea');
+  if (aiSend) aiSend.addEventListener('click', sendAiMessage);
+  if (aiTextarea) {
+    aiTextarea.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendAiMessage();
+      }
+    });
+  }
   root.querySelector('#ce-tab-size')?.addEventListener('change', event => {
     setTabSize(Number(event.currentTarget.value));
   });
@@ -533,6 +664,116 @@ function toggleLayoutMenu() {
   if (!menu.hidden) getRootPart('#ce-tab-size')?.focus();
 }
 
+function applyActiveView() {
+  const root = state.root;
+  if (!root) return;
+
+  const viewHost = getRootPart('#code-editor-view');
+  const main = getRootPart('.code-editor-main');
+  const panels = getRootPart('.code-editor-panels');
+  
+  if (!viewHost || !main || !panels) return;
+
+  const activePath = state.activePath || '';
+  const isVirtual = activePath.startsWith('virtual://');
+
+  if (isVirtual) {
+    panels.style.setProperty('display', 'none', 'important');
+    viewHost.style.setProperty('display', 'none', 'important');
+  } else {
+    panels.style.removeProperty('display');
+    viewHost.style.removeProperty('display');
+    root.classList.toggle('code-editor-tools-hidden', !state.toolsVisible);
+  }
+
+  for (const name of ['terminal', 'search', 'ai']) {
+    const panel = getRootPart(`#ce-panel-${name}`);
+    if (!panel) continue;
+    
+    if (panel.parentNode === main) {
+      panels.appendChild(panel);
+    }
+    
+    const isThisVirtualActive = activePath === `virtual://${name}`;
+    if (isThisVirtualActive) {
+      main.appendChild(panel);
+      panel.hidden = false;
+      panel.style.setProperty('display', name === 'search' ? 'block' : 'flex', 'important');
+      panel.style.setProperty('flex', '1', 'important');
+      panel.style.setProperty('height', '100%', 'important');
+      
+      if (name === 'terminal') {
+        const session = state.terminalSessions?.find(s => s.id === state.activeTerminalSessionId);
+        if (session && session.terminal) {
+          requestAnimationFrame(() => {
+            try { session.terminal.resize(); } catch (_) {}
+            try { session.terminal.focus(); } catch (_) {}
+          });
+        }
+      } else if (name === 'ai') {
+        startAiMirroring();
+        requestAnimationFrame(() => {
+          getRootPart('#ce-ai-textarea')?.focus();
+        });
+      }
+    } else {
+      const isActiveInBottom = state.activePanel === name && !isVirtual;
+      panel.hidden = !isActiveInBottom;
+      if (isActiveInBottom) {
+        panel.style.setProperty('display', name === 'search' ? 'block' : 'flex', 'important');
+      } else {
+        panel.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }
+
+  if (!isVirtual) {
+    stopAiMirroring();
+    if (state.activePanel === 'terminal') {
+      const session = state.terminalSessions?.find(s => s.id === state.activeTerminalSessionId);
+      requestAnimationFrame(() => {
+        try { session?.terminal?.resize(); } catch (_) {}
+      });
+    } else if (state.activePanel === 'ai') {
+      startAiMirroring();
+    }
+  }
+}
+
+function applyToolsPosition() {
+  const panels = getRootPart('.code-editor-panels');
+  const body = getRootPart('.code-editor-body');
+  const root = getRootPart('#code-editor-root');
+  if (!panels || !body || !root) return;
+
+  const isSide = state.toolsPosition === 'side';
+  if (isSide) {
+    if (panels.parentNode !== body) {
+      body.appendChild(panels);
+    }
+    panels.style.setProperty('width', '380px', 'important');
+    panels.style.setProperty('height', '100%', 'important');
+    panels.style.setProperty('border-top', 'none', 'important');
+    panels.style.setProperty('border-left', '1px solid var(--border)', 'important');
+  } else {
+    if (panels.parentNode !== root) {
+      root.appendChild(panels);
+    }
+    panels.style.removeProperty('width');
+    panels.style.removeProperty('height');
+    panels.style.removeProperty('border-top');
+    panels.style.removeProperty('border-left');
+  }
+  
+  requestAnimationFrame(() => {
+    state.terminalSessions?.forEach(s => {
+      if (s.terminal) {
+        try { s.terminal.resize(); } catch (_) {}
+      }
+    });
+  });
+}
+
 function syncLayoutPreferences() {
   const root = state.root;
   if (!root) return;
@@ -558,6 +799,7 @@ function syncLayoutPreferences() {
   if (toolsMenu) toolsMenu.innerHTML = `${state.toolsVisible ? 'Hide' : 'Show'} terminal <kbd>⌘⇧J</kbd>`;
   if (tabSize) tabSize.value = String(state.tabSize);
   if (tabStatus) tabStatus.textContent = `Tabs: ${state.tabSize}`;
+  applyToolsPosition();
 }
 
 function setTabSize(value) {
@@ -939,12 +1181,22 @@ async function previewActiveDocument() {
   return true;
 }
 
-function openWebPreview() {
-  const value = window.prompt('Web preview URL (http:// or https://)', 'http://localhost:3000');
+async function openWebPreview() {
+  const value = await uiModule.styledPrompt('Enter local port number (e.g., 5020 or 3000):', {
+    title: 'Web Preview',
+    defaultValue: '5020',
+    placeholder: '5020',
+    confirmText: 'Open',
+    cancelText: 'Cancel'
+  });
   if (value === null) return false;
+  let url = value.trim();
+  if (/^\d+$/.test(url)) {
+    url = `${window.location.protocol}//${window.location.hostname}:${url}/`;
+  }
   const panel = ensurePreviewPanel();
   if (!panel) return false;
-  panel.openWebPreview(value);
+  panel.openWebPreview(url);
   syncPreviewResizeHandle();
   updatePreviewAction();
   return true;
@@ -1168,15 +1420,6 @@ function killTerminalSession(sessionId) {
 function ensureTerminal() {
   if (!state.context) return null;
 
-  const addBtn = getRootPart('#ce-terminal-add');
-  if (addBtn && !addBtn.dataset.wired) {
-    addBtn.dataset.wired = 'true';
-    addBtn.addEventListener('click', () => {
-      const newSession = createTerminalSession();
-      selectTerminalSession(newSession.id);
-    });
-  }
-
   if (state.terminalSessions.length === 0) {
     createTerminalSession();
   }
@@ -1216,22 +1459,43 @@ function closeTerminalPanel() {
 }
 
 function showPanel(name, { focus = true } = {}) {
-  if (!['terminal', 'search'].includes(name) || !state.panels) return null;
+  if (!['terminal', 'search', 'ai'].includes(name) || !state.panels) return null;
+  
+  const isVirtualActive = state.activePath?.startsWith('virtual://');
+  if (isVirtualActive) {
+    void openAt(`virtual://${name}`);
+    return getRootPart(`[data-editor-panel-slot="${name}"]`);
+  }
+
   if (!state.toolsVisible) {
     state.toolsVisible = true;
     syncLayoutPreferences();
   }
   state.activePanel = name;
-  for (const panelName of ['terminal', 'search']) {
+  for (const panelName of ['terminal', 'search', 'ai']) {
     const panel = getRootPart(`#ce-panel-${panelName}`);
     const tab = getRootPart(`#ce-panel-tab-${panelName}`);
     const active = panelName === name;
-    if (panel) panel.hidden = !active;
+    if (panel) {
+      panel.hidden = !active;
+      if (active) {
+        if (panelName === 'terminal' || panelName === 'ai') {
+          panel.style.setProperty('display', 'flex', 'important');
+        } else {
+          panel.style.removeProperty('display');
+        }
+      } else {
+        panel.style.setProperty('display', 'none', 'important');
+      }
+    }
     if (tab) {
       tab.classList.toggle('active', active);
       tab.setAttribute('aria-selected', String(active));
       tab.tabIndex = active ? 0 : -1;
     }
+  }
+  if (name !== 'ai') {
+    stopAiMirroring();
   }
   if (name === 'terminal') {
     const terminal = ensureTerminal();
@@ -1239,12 +1503,168 @@ function showPanel(name, { focus = true } = {}) {
       terminal?.refresh();
       if (focus) terminal?.focus();
     });
+  } else if (name === 'ai') {
+    startAiMirroring();
+    if (focus) {
+      requestAnimationFrame(() => {
+        const textarea = getRootPart('#ce-ai-textarea');
+        if (textarea) textarea.focus();
+      });
+    }
   } else if (focus) {
     requestAnimationFrame(() => state.panels?.search?.focus());
   }
+  applyActiveView();
   persist();
   emit('panel-request', { panel: name, slot: getRootPart(`[data-editor-panel-slot="${name}"]`) });
   return getRootPart(`[data-editor-panel-slot="${name}"]`);
+}
+
+function startAiMirroring() {
+  const sourceLog = document.getElementById('chat-history');
+  const targetLog = getRootPart('#ce-ai-messages');
+  if (!sourceLog || !targetLog) return;
+
+  syncAiMessages();
+
+  if (aiMirrorObserver) aiMirrorObserver.disconnect();
+  aiMirrorObserver = new MutationObserver(() => {
+    syncAiMessages();
+  });
+  aiMirrorObserver.observe(sourceLog, { childList: true, subtree: true, characterData: true });
+}
+
+function stopAiMirroring() {
+  if (aiMirrorObserver) {
+    aiMirrorObserver.disconnect();
+    aiMirrorObserver = null;
+  }
+}
+
+function syncAiMessages() {
+  const sourceLog = document.getElementById('chat-history');
+  const targetLog = getRootPart('#ce-ai-messages');
+  if (!sourceLog || !targetLog) return;
+
+  const messages = Array.from(sourceLog.querySelectorAll('.msg'));
+  targetLog.innerHTML = '';
+
+  messages.forEach(msg => {
+    const isUser = msg.classList.contains('msg-user');
+    const isAi = msg.classList.contains('msg-ai');
+    const bodyEl = msg.querySelector('.body');
+    if (!bodyEl) return;
+    
+    const bubble = document.createElement('div');
+    bubble.style.padding = '6px 10px';
+    bubble.style.borderRadius = '6px';
+    bubble.style.maxWidth = '85%';
+    bubble.style.wordBreak = 'break-word';
+    bubble.style.fontSize = '12px';
+    
+    if (isUser) {
+      bubble.style.alignSelf = 'flex-end';
+      bubble.style.background = 'var(--accent, #58a6ff)';
+      bubble.style.color = '#fff';
+      bubble.textContent = bodyEl.textContent;
+    } else if (isAi) {
+      bubble.style.alignSelf = 'flex-start';
+      bubble.style.background = 'var(--panel)';
+      bubble.style.border = '1px solid var(--border)';
+      bubble.style.color = 'var(--fg)';
+      bubble.innerHTML = bodyEl.innerHTML;
+    } else {
+      bubble.style.alignSelf = 'center';
+      bubble.style.background = 'rgba(236, 106, 92, 0.15)';
+      bubble.style.border = '1px solid var(--accent, #ec6a5c)';
+      bubble.style.color = 'var(--accent, #ec6a5c)';
+      bubble.style.fontSize = '11px';
+      bubble.textContent = bodyEl.textContent;
+    }
+
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.flexDirection = 'column';
+    row.style.alignItems = isUser ? 'flex-end' : (isAi ? 'flex-start' : 'center');
+    row.style.width = '100%';
+    row.style.margin = '4px 0';
+    row.appendChild(bubble);
+
+    targetLog.appendChild(row);
+  });
+
+  targetLog.scrollTop = targetLog.scrollHeight;
+}
+
+const _WEBVIEW_SNAPSHOT_TYPE = 'astercaeser-webview-snapshot';
+const _WEBVIEW_SNAPSHOT_REQUEST_TYPE = 'astercaeser-webview-snapshot-request';
+// Snapshots older than this are treated as stale: the URL is still appended,
+// but the content is dropped so the agent doesn't read an outdated page.
+const _WEBVIEW_SNAPSHOT_MAX_AGE_MS = 30_000;
+
+// The web preview iframe is cross-origin, so the parent cannot read its DOM.
+// Pages that embed the AsterCaeser bridge script (base.html of the previewed
+// app) postMessage their text content up; we cache the latest one and append
+// it to the agent context when the user asks about the webview.
+function installWebviewSnapshotBridge() {
+  window.addEventListener('message', event => {
+    const data = event.data;
+    if (!data || typeof data !== 'object' || data.type !== _WEBVIEW_SNAPSHOT_TYPE) return;
+    const frame = document.querySelector('.editor-web-preview-frame');
+    if (!frame || event.source !== frame.contentWindow) return;
+    if (typeof data.text !== 'string' || !data.text.trim()) return;
+    state.webviewSnapshot = {
+      url: typeof data.url === 'string' ? data.url : frame.src,
+      title: typeof data.title === 'string' ? data.title : '',
+      text: data.text,
+      at: Date.now(),
+    };
+  });
+}
+
+function webviewContextSuffix() {
+  const frame = document.querySelector('.editor-web-preview-frame');
+  if (!frame || !frame.src || !frame.isConnected) return '';
+  let suffix = `\n\n[Context: The active webview is loaded with URL: ${frame.src}]`;
+  // Always ping the page for a fresh snapshot: postMessage is asynchronous,
+  // so this one lands in time for the NEXT message; the cached one below
+  // covers the current message.
+  try {
+    frame.contentWindow.postMessage({ type: _WEBVIEW_SNAPSHOT_REQUEST_TYPE }, '*');
+  } catch (_) {}
+  const snap = state.webviewSnapshot;
+  if (!snap || !snap.text) return suffix;
+  if (Date.now() - snap.at > _WEBVIEW_SNAPSHOT_MAX_AGE_MS) return suffix;
+  const samePage = snap.url === frame.src
+    || snap.url.startsWith(frame.src)
+    || (snap.url.endsWith('/') && frame.src.startsWith(snap.url));
+  if (!samePage) return suffix;
+  const title = snap.title ? `${snap.title} — ` : '';
+  suffix += `\n[Webview content: ${title}${snap.text}]`;
+  return suffix;
+}
+
+function sendAiMessage() {
+  const textarea = getRootPart('#ce-ai-textarea');
+  if (!textarea) return;
+  let val = textarea.value.trim();
+  if (!val) return;
+
+  // If a webview frame is active and loaded, append the URL + the page's
+  // text snapshot (via the postMessage bridge) as context for the agent.
+  val += webviewContextSuffix();
+
+  const mainInput = document.getElementById('message');
+  const sendBtn = document.querySelector('.send-btn') || document.getElementById('submit');
+  if (!mainInput || !sendBtn) {
+    notice('Chat interface is not ready.');
+    return;
+  }
+
+  mainInput.value = val;
+  mainInput.dispatchEvent(new Event('input', { bubbles: true }));
+  textarea.value = '';
+  sendBtn.click();
 }
 
 async function saveAllOpenDocuments() {
@@ -1363,6 +1783,7 @@ function persist() {
       activePanel: state.activePanel,
       terminalSessions: state.terminalSessions.map(s => ({ id: s.id, name: s.name })),
       activeTerminalSessionId: state.activeTerminalSessionId,
+      toolsPosition: state.toolsPosition,
     }));
   } catch (_) { /* Persistence is optional (private browsing may reject it). */ }
 }
@@ -1377,7 +1798,8 @@ function restore() {
     if (typeof saved.treeVisible === 'boolean') state.treeVisible = saved.treeVisible;
     if (typeof saved.toolsVisible === 'boolean') state.toolsVisible = saved.toolsVisible;
     if (Number.isFinite(saved.previewWidth) && saved.previewWidth >= 300) state.previewWidth = saved.previewWidth;
-    if (saved.activePanel === 'terminal' || saved.activePanel === 'search') state.activePanel = saved.activePanel;
+    if (saved.activePanel === 'terminal' || saved.activePanel === 'search' || saved.activePanel === 'ai') state.activePanel = saved.activePanel;
+    if (saved.toolsPosition === 'bottom' || saved.toolsPosition === 'side') state.toolsPosition = saved.toolsPosition;
     if (Array.isArray(saved.terminalSessions)) {
       state.terminalSessions = saved.terminalSessions.map(s => ({
         id: s.id,
@@ -1394,7 +1816,7 @@ function restore() {
       state.activeTerminalSessionId = null;
     }
     return Array.isArray(saved.openPaths)
-      ? saved.openPaths.map(isSafeRelativePath).filter(Boolean).slice(0, 24)
+      ? saved.openPaths.map(p => p.startsWith('virtual://') ? p : isSafeRelativePath(p)).filter(Boolean).slice(0, 24)
       : [];
   } catch (_) {
     return [];
@@ -1405,8 +1827,15 @@ async function setActive(path, { line, column } = {}) {
   const active = state.documents.get(path);
   if (!active) return false;
   state.activePath = path;
-  const view = ensureView();
-  if (view && view.state !== active.state) view.setState(active.state);
+
+  if (path.startsWith('virtual://')) {
+    applyActiveView();
+  } else {
+    const view = ensureView();
+    if (view && view.state !== active.state) view.setState(active.state);
+    applyActiveView();
+  }
+
   renderTabs();
   updateStatus(active.loading ? 'Loading…' : active.error ? 'Load failed' : '');
   updateAskAgentAction();
@@ -1416,7 +1845,9 @@ async function setActive(path, { line, column } = {}) {
   if (Number.isInteger(line) && line > 0) {
     requestAnimationFrame(() => goToPosition(line, column));
   }
-  requestAnimationFrame(() => state.view?.focus());
+  if (!path.startsWith('virtual://')) {
+    requestAnimationFrame(() => state.view?.focus());
+  }
   return true;
 }
 
@@ -1528,15 +1959,30 @@ function startExternalFileWatcher() {
 
 /** Open a project-relative file and optionally reveal a line/column. */
 export async function openAt(path, options = {}) {
-  const safePath = isSafeRelativePath(path);
+  const isVirtual = path.startsWith('virtual://');
+  const safePath = isVirtual ? path : isSafeRelativePath(path);
   if (!safePath || !state.context) return false;
   let document = state.documents.get(safePath);
   if (!document) {
-    document = createDocument(safePath);
+    if (isVirtual) {
+      const name = safePath.replace('virtual://', '');
+      document = {
+        path: safePath,
+        content: '',
+        savedContent: '',
+        loaded: true,
+        loading: false,
+        dirty: false,
+        state: EditorState.create({ extensions: [] }),
+        languageName: name.toUpperCase()
+      };
+    } else {
+      document = createDocument(safePath);
+    }
     state.documents.set(safePath, document);
   }
   // Load real Typst grammar from CDN (tree-sitter based), fallback to StreamLanguage
-  if (safePath.endsWith('.typ') && state.view) {
+  if (!isVirtual && safePath.endsWith('.typ') && state.view) {
     loadTypstLang().then(lang => {
       if (lang && state.view && document.path === state.activePath) {
         state.view.dispatch({ effects: document.languageCompartment.reconfigure(lang) });
@@ -1544,9 +1990,11 @@ export async function openAt(path, options = {}) {
     });
   }
   await setActive(safePath, options);
-  await readDocument(document);
-  void refreshPreviewForActiveDocument();
-  if (!document.error && Number.isInteger(options.line) && options.line > 0) goToPosition(options.line, options.column);
+  if (!isVirtual) {
+    await readDocument(document);
+    void refreshPreviewForActiveDocument();
+    if (!document.error && Number.isInteger(options.line) && options.line > 0) goToPosition(options.line, options.column);
+  }
   return !document.error;
 }
 
@@ -1647,7 +2095,12 @@ export async function closeFile(path) {
     const next = [...state.documents.keys()].at(-1) || null;
     state.activePath = next;
     if (next) await setActive(next);
-    else if (state.view) state.view.setState(EditorState.create({ extensions: [basicSetup, editorTheme] }));
+    else {
+      if (state.view) state.view.setState(EditorState.create({ extensions: [basicSetup, editorTheme] }));
+      applyActiveView();
+    }
+  } else {
+    applyActiveView();
   }
   renderTabs();
   updateStatus();
@@ -1722,6 +2175,7 @@ export function requestPanel(name) {
 }
 
 function teardownRoot() {
+  stopAiMirroring();
   clearTimeout(state.previewTimer);
   state.previewTimer = null;
   if (state.externalPollTimer) clearInterval(state.externalPollTimer);
@@ -1802,7 +2256,23 @@ export async function openEditor(projectOrId, legacyPath) {
   const restoredPaths = state.documents.size ? [] : restore();
   syncLayoutPreferences();
   mountPanels();
-  for (const path of restoredPaths) state.documents.set(path, createDocument(path));
+  for (const path of restoredPaths) {
+    if (path.startsWith('virtual://')) {
+      const name = path.replace('virtual://', '');
+      state.documents.set(path, {
+        path: path,
+        content: '',
+        savedContent: '',
+        loaded: true,
+        loading: false,
+        dirty: false,
+        state: EditorState.create({ extensions: [] }),
+        languageName: name.toUpperCase()
+      });
+    } else {
+      state.documents.set(path, createDocument(path));
+    }
+  }
   renderTabs();
   const treeHost = getRootPart('#code-editor-file-tree');
   state.tree?.destroy();
@@ -1810,7 +2280,7 @@ export async function openEditor(projectOrId, legacyPath) {
   const restoredActive = (() => {
     try { return JSON.parse(localStorage.getItem(persistenceKey()) || '{}').activePath; } catch (_) { return null; }
   })();
-  const initialPath = isSafeRelativePath(restoredActive) || restoredPaths[0];
+  const initialPath = (restoredActive && (restoredActive.startsWith('virtual://') || isSafeRelativePath(restoredActive))) || restoredPaths[0];
   if (initialPath) await openAt(initialPath);
   const vimButton = getRootPart('[data-editor-action="vim"]');
   if (vimButton) {
@@ -1826,6 +2296,7 @@ export async function openEditor(projectOrId, legacyPath) {
 export function initCodeEditor() {
   if (state.initialized) return;
   state.initialized = true;
+  installWebviewSnapshotBridge();
   document.addEventListener('open-editor', event => {
     const detail = event.detail || {};
     const filePath = isSafeRelativePath(detail.filePath);

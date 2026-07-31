@@ -80,10 +80,36 @@ _BUILTIN_SERVERS = {
 _BUILTIN_NPX_SERVERS = {
     "builtin_browser": {
         "name": "Built-in: Browser",
-        "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest", "--headless", "--caps", "vision"],
     }
 }
+
+
+def builtin_browser_launch_args() -> list[str]:
+    """Launch args for the built-in Playwright browser MCP.
+
+    The browser uses a PERSISTENT profile (browser_user_data_dir setting,
+    default <app_root>/data/browser-profile) so logins — e.g. the user's
+    warehouse dashboard at localhost:5020 — survive restarts and the agent
+    can read pages that sit behind an auth wall. Headless is controlled by
+    the browser_headless setting: flip it off once to get a visible browser
+    window to sign in, then flip it back on.
+    """
+    from src.settings import get_setting
+    args = ["-y", "@playwright/mcp@latest"]
+    if get_setting("browser_headless", True):
+        args.append("--headless")
+    profile = str(get_setting("browser_user_data_dir", "") or "").strip()
+    if not profile:
+        profile = os.path.join(get_app_root(), "data", "browser-profile")
+    args += ["--user-data-dir", profile, "--caps", "vision"]
+    return args
+
+
+def npx_launch_args(server_id: str) -> list[str]:
+    """Effective npx args for a built-in NPX server id ([] when unknown)."""
+    if server_id == "builtin_browser":
+        return builtin_browser_launch_args()
+    return []
 
 # Global flag to disable MCP if there are compatibility issues
 MCP_DISABLED = os.environ.get("ASTERCAESER_DISABLE_MCP", "").lower() in ("1", "true", "yes")
@@ -162,6 +188,10 @@ async def register_builtin_servers(mcp_manager):
     async def _start_npx_servers():
         await asyncio.sleep(3)  # let Python servers finish first
         for server_id, cfg in _BUILTIN_NPX_SERVERS.items():
+            args = npx_launch_args(server_id)
+            if not args:
+                logger.warning(f"Skipping NPX server {server_id}: no launch args")
+                continue
             # Skip the server if its npx package isn't cached. Without this
             # check, npx would try to download/install the package on first
             # use, which can take minutes (or hang) on fresh installs without
@@ -173,7 +203,6 @@ async def register_builtin_servers(mcp_manager):
             # task, which cascades cancellations into the rest of the event
             # loop and downs the app. Detecting installed-state up-front lets
             # us bail with a useful warning before we ever touch stdio_client.
-            args = cfg["args"]
             pkg_spec = _npx_package_from_args(args)
             if pkg_spec and not await _is_npx_package_cached(npx_path, pkg_spec):
                 logger.warning(

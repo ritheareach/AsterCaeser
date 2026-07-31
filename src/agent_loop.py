@@ -2501,6 +2501,29 @@ PLAN_MODE_DIRECTIVE = (
 )
 
 
+# Injected whenever the user's message carries the webview context marker (the
+# editor appends "[Context: The active webview is loaded with URL: ...]" plus the
+# page's text snapshot). Small models tend to answer from the pasted page text
+# alone and even claim they have no file tools. This directive pins the opposite
+# expectation: the page text is context, the CODE is the source of truth.
+WEBVIEW_DIRECTIVE = (
+    "## WEB PREVIEW QUESTION\n"
+    "The user is asking about the page in the web preview (webview context above). "
+    "The visible page text is included so you can read its numbers, but it is only "
+    "a snapshot — do NOT treat it as the whole story.\n"
+    "\n"
+    "If they ask HOW something works, WHAT backs a number, WHY the page shows "
+    "something, or want anything changed on the page: investigate the actual "
+    "source code of the previewed app FIRST, using your file tools — "
+    "`get_workspace` to find the project, then `grep`/`glob`/`ls`/`read_file` to "
+    "locate the page's template, route and API. Quote file paths and line numbers "
+    "in your answer. Only fall back to the page text when you genuinely cannot "
+    "reach the code (e.g. the project isn't on this machine).\n"
+    "\n"
+    "Never claim a tool is unavailable — check your tool list and use it."
+)
+
+
 def build_active_plan_note(approved_plan: str) -> str:
     """System note that pins an approved plan during execution.
 
@@ -3117,6 +3140,58 @@ async def stream_agent_loop(
             _ody_memory_identity_turn,
             len(messages),
         )
+    # Webview context marker: the editor UI appends "[Context: The active
+    # webview is loaded with URL: ...]" (plus a text snapshot of the page via
+    # the postMessage bridge) when the user is asking about the page shown in
+    # the web preview. Two consequences:
+    #   1. RAG selection frequently omits the browser MCP tools for such
+    #      phrasing ("can you see my dashboard?"), so the agent answers "I
+    #      can't see it" instead of inspecting the page. Force the browser
+    #      tools into this turn's toolset — the user is explicitly pointing
+    #      at a page.
+    #   2. When they ask HOW/WHY the page works, the agent must be able to
+    #      read the previewed app's code — file tools are not always in the
+    #      RAG selection either, and small models then claim they "don't have
+    #      a file tool". Force the read-only file tools in as well.
+    if (
+        _relevant_tools
+        and _last_user
+        and "[context: the active webview is loaded with url:" in _last_user.lower()
+    ):
+        _browser_tool_names = {
+            s.get("function", {}).get("name")
+            for s in mcp_schemas
+            if s.get("function", {}).get("name", "").startswith("mcp__builtin_browser__")
+        }
+        if _browser_tool_names:
+            _relevant_tools |= _browser_tool_names
+            logger.info(
+                "[agent-intent] webview context present; added browser tools=%s",
+                sorted(_browser_tool_names)[:12],
+            )
+        _webview_file_tools = {"read_file", "grep", "glob", "ls", "get_workspace"}
+        _added_file_tools = _webview_file_tools - set(_relevant_tools)
+        if _added_file_tools:
+            _relevant_tools |= _added_file_tools
+            logger.info(
+                "[agent-intent] webview context present; added file tools=%s",
+                sorted(_added_file_tools),
+            )
+        # Pin the expectation that the CODE is the source of truth for
+        # web-preview questions (small models answer from the pasted text and
+        # claim they lack tools). Only inject when the user is actually
+        # asking how/why something works — a plain "can you see the page?"
+        # doesn't need the investigation push. Insert at the top of the
+        # system prompt so it dominates; the plan-mode directive, if any,
+        # goes above it later.
+        _webview_question = re.search(
+            r"\b(how|what|why|explain|describe)\b",
+            (_last_user or "").lower(),
+        )
+        if _webview_question and messages and messages[0].get("role") == "system":
+            messages[0]["content"] = WEBVIEW_DIRECTIVE + "\n\n" + (messages[0].get("content") or "")
+        elif _webview_question:
+            messages.insert(0, {"role": "system", "content": WEBVIEW_DIRECTIVE})
     if plan_mode and not guide_only:
         # Steer the model to investigate-then-propose. Hard tool gating handles
         # every write path except shell; this directive is what keeps the
