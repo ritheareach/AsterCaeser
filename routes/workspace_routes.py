@@ -1127,7 +1127,10 @@ def setup_workspace_routes():
                         content={"ok": False, "message": "Typst could not compile this document."},
                     )
 
-                outputs = sorted(Path(temporary).glob("page-*.svg"))
+                outputs = sorted(
+                    Path(temporary).glob("page-*.svg"),
+                    key=lambda p: int(re.search(r"page-(\d+)", p.name).group(1))
+                )
                 if not outputs or len(outputs) > _MAX_TYPST_PAGES:
                     return JSONResponse(
                         status_code=422,
