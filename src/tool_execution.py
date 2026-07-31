@@ -541,12 +541,66 @@ async def _direct_fallback(
 
         from src.agent_tools import TOOL_HANDLERS
         if tool in TOOL_HANDLERS:
-            return await TOOL_HANDLERS[tool](content, ctx)
+            result = await TOOL_HANDLERS[tool](content, ctx)
+            # Glob's implementation resolves its search root before formatting
+            # a no-match response.  Never echo that resolved root here: with a
+            # rejected literal such as ``../../secret``, it can contain the
+            # canonical host path that the confinement check correctly refused
+            # to return as a match.  Keep the model's supplied pattern, which
+            # is useful for retrying, but use a policy label for the root.
+            if tool == "glob":
+                result = _redact_glob_no_match_root(result, content)
+            return result
 
     except Exception as e:
         return {"error": f"{tool}: {e}", "exit_code": 1}
 
     return None
+
+
+def _redact_glob_no_match_root(result: Optional[Dict], content: str) -> Optional[Dict]:
+    """Replace a glob no-match's resolved root with a non-path policy label.
+
+    This sits at the dispatch boundary so it protects the user-facing result
+    without changing the glob implementation's internal filesystem behaviour.
+    It intentionally retains the caller-provided pattern (including a relative
+    traversal pattern) because it adds no newly resolved host-path information.
+    """
+    if not isinstance(result, dict):
+        return result
+    output = result.get("output")
+    if not isinstance(output, str) or not output.startswith("No files matching "):
+        return result
+    try:
+        raw = (content or "").strip()
+        if raw.startswith("{"):
+            parsed = json.loads(raw)
+            pattern = str(parsed.get("pattern", "")).strip() if isinstance(parsed, dict) else ""
+        else:
+            pattern = raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pattern = ""
+    # Do not echo a traversal/absolute pattern verbatim. On POSIX a relative
+    # ``../../..`` pattern can contain an absolute-looking host suffix, and
+    # presenting it alongside a no-match confirms that suffix as a host path.
+    # Safe patterns remain verbatim for useful retry diagnostics.
+    normalized = pattern.replace("\\", "/")
+    has_parent_escape = any(part == ".." for part in normalized.split("/"))
+    has_absolute_form = (
+        os.path.isabs(pattern)
+        or normalized.startswith("/")
+        or bool(re.match(r"^[A-Za-z]:/", normalized))
+    )
+    if has_parent_escape or has_absolute_form:
+        display = "a rejected outside-workspace pattern"
+    else:
+        # Glob already rejects an empty pattern, but a defensive fallback keeps
+        # a malformed call from preserving a handler-produced absolute root.
+        display = repr(pattern) if pattern else "the requested pattern"
+    label = "the active workspace" if get_active_workspace() else "the permitted search root"
+    sanitized = dict(result)
+    sanitized["output"] = f"No files matching {display} under {label}"
+    return sanitized
 
 
 async def _document_tool_dispatch(

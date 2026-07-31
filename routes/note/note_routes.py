@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.database import SessionLocal, Note
+from core.database import SessionLocal, Note, Project
 from core.middleware import INTERNAL_TOOL_USER
 from src.auth_helpers import require_user
 from src.constants import DATA_DIR
@@ -37,6 +37,7 @@ class NoteCreate(BaseModel):
     image_url: Optional[str] = None
     repeat: Optional[str] = "none"
     sort_order: Optional[int] = None
+    project_id: Optional[str] = None
 
 
 class NoteUpdate(BaseModel):
@@ -53,11 +54,39 @@ class NoteUpdate(BaseModel):
     repeat: Optional[str] = None
     sort_order: Optional[int] = None
     agent_session_id: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _normalise_project_id(value: Optional[str]) -> Optional[str]:
+    value = value.strip() if isinstance(value, str) else ""
+    return value or None
+
+
+def _project_belongs_to_request(db, project_id: str, user: Optional[str]) -> bool:
+    """Allow an exact owner, plus the legacy anonymous ``__system__`` row.
+
+    ``None`` is the identity used by these routes in documented anonymous
+    mode.  It can attach only anonymous / legacy-system projects, never a
+    project owned by a named account left over from an authenticated deploy.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return False
+    if user is None:
+        return project.owner in (None, "__system__")
+    return project.owner == user
+
+
+def _field_was_supplied(body: BaseModel, name: str) -> bool:
+    """Support explicit null in Pydantic v1/v2 update payloads."""
+    fields = getattr(body, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(body, "__fields_set__", set())
+    return name in fields
 
 def _note_to_dict(note: Note) -> Dict[str, Any]:
     items = None
@@ -93,6 +122,7 @@ def _note_to_dict(note: Note) -> Dict[str, Any]:
         "ai_classification": ai_cls,
         "ai_content_hash": getattr(note, "ai_content_hash", None),
         "agent_session_id": getattr(note, "agent_session_id", None),
+        "project_id": getattr(note, "project_id", None),
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
     }
@@ -625,13 +655,23 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         request: Request,
         archived: Optional[bool] = None,
         label: Optional[str] = None,
+        project_id: Optional[str] = None,
     ):
         user = _owner(request)
+        project_id = _normalise_project_id(project_id)
         db = SessionLocal()
         try:
             q = db.query(Note)
             if user is not None:
                 q = q.filter(Note.owner == user)
+            if project_id:
+                if not _project_belongs_to_request(db, project_id, user):
+                    raise HTTPException(404, "Project not found")
+                q = q.filter(Note.project_id == project_id)
+            else:
+                # The original notes screen remains an unscoped/legacy view.
+                # Project notes are returned only by an explicit project query.
+                q = q.filter(Note.project_id == None)  # noqa: E711
             if archived is not None:
                 q = q.filter(Note.archived == archived)
             else:
@@ -660,6 +700,9 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         )
         db = SessionLocal()
         try:
+            project_id = _normalise_project_id(body.project_id)
+            if project_id and not _project_belongs_to_request(db, project_id, user):
+                raise HTTPException(404, "Project not found")
             note = Note(
                 id=str(uuid.uuid4()),
                 owner=user,
@@ -676,6 +719,7 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
                 image_url=body.image_url,
                 repeat=body.repeat or "none",
                 sort_order=body.sort_order if body.sort_order is not None else 0,
+                project_id=project_id,
             )
             db.add(note)
             db.commit()
@@ -749,6 +793,11 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
                 note.sort_order = body.sort_order
             if body.agent_session_id is not None:
                 note.agent_session_id = body.agent_session_id
+            if _field_was_supplied(body, "project_id"):
+                project_id = _normalise_project_id(body.project_id)
+                if project_id and not _project_belongs_to_request(db, project_id, user):
+                    raise HTTPException(404, "Project not found")
+                note.project_id = project_id
 
             db.commit()
             db.refresh(note)

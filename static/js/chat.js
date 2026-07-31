@@ -1233,6 +1233,13 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       if (_ws) {
         fd.append('workspace', _ws);
       }
+      // Send the active project on every turn. Normally the session was
+      // already created with this scope; this also lets the server repair a
+      // legacy/racing unscoped session before it builds model context.
+      const _projectId = Storage.get('astercaeser-active-project', null);
+      if (_projectId) {
+        fd.append('project_id', _projectId);
+      }
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
       }
@@ -2710,6 +2717,21 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                   if (window._manageMemoryTimer) clearTimeout(window._manageMemoryTimer);
                   window._manageMemoryTimer = setTimeout(
                     () => window.dispatchEvent(new CustomEvent('memory-refresh')), 600);
+                }
+                // Agent file writes happen on disk, outside CodeMirror's
+                // in-memory document. Notify the project editor so an already
+                // open clean tab never remains stale until the user closes it.
+                if (
+                  (json.tool === 'write_file' || json.tool === 'edit_file')
+                  && (json.exit_code === 0 || json.exit_code == null)
+                  && json.path
+                ) {
+                  document.dispatchEvent(new CustomEvent('aster:project-file-changed', {
+                    detail: {
+                      path: json.path,
+                      projectId: Storage.get('astercaeser-active-project', null),
+                    },
+                  }));
                 }
                 // --- Apply UI control actions embedded in tool_output ---
                 if (json.ui_event) {

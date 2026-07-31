@@ -1085,6 +1085,7 @@ def _build_chatgpt_responses_payload(
     max_tokens: int,
     *,
     stream: bool = False,
+    tools: Optional[List[Dict]] = None,
 ) -> Dict:
     from src.chatgpt_subscription import build_responses_input
 
@@ -1098,6 +1099,22 @@ def _build_chatgpt_responses_payload(
     }
     if not _restricts_temperature(model):
         payload["temperature"] = temperature
+    if tools:
+        # Responses API function tools are flat, whereas the agent registry
+        # stores Chat-Completions schemas under `function`.
+        response_tools = []
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict) or not function.get("name"):
+                continue
+            response_tools.append({
+                "type": "function",
+                "name": function["name"],
+                "description": function.get("description") or "",
+                "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+            })
+        if response_tools:
+            payload["tools"] = response_tools
     # ChatGPT Subscription Codex API does not support max_output_tokens —
     # passing it returns HTTP 400 "Unsupported parameter: max_output_tokens".
     # Do not include it in the payload.
@@ -2172,7 +2189,9 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
     elif provider == "chatgpt-subscription":
         target_url = _normalize_chatgpt_subscription_url(url)
         h = _provider_headers(provider, headers)
-        payload = _build_chatgpt_responses_payload(model, messages_copy, temperature, max_tokens, stream=True)
+        payload = _build_chatgpt_responses_payload(
+            model, messages_copy, temperature, max_tokens, stream=True, tools=tools,
+        )
     else:
         target_url = _normalize_openai_chat_url(url)
         payload = {
@@ -2228,6 +2247,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         event_name = ""
         input_tokens = 0
         output_tokens = 0
+        subscription_tool_calls: Dict[str, Dict] = {}
         try:
             client = _get_http_client()
             async with client.stream('POST', target_url, json=payload, headers=h, timeout=stream_timeout) as r:
@@ -2261,10 +2281,32 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                                 yield _degenerate
                                 return
                             yield f'data: {json.dumps({"delta": delta})}\n\n'
+                    elif evt == "response.output_item.added":
+                        item = data.get("item") or {}
+                        if item.get("type") == "function_call" and item.get("name"):
+                            key = str(item.get("id") or item.get("call_id") or len(subscription_tool_calls))
+                            subscription_tool_calls[key] = {
+                                "id": item.get("call_id") or item.get("id") or f"call_{len(subscription_tool_calls)}",
+                                "name": item["name"],
+                                "arguments": item.get("arguments") or "",
+                            }
+                    elif evt == "response.function_call_arguments.delta":
+                        key = str(data.get("item_id") or data.get("call_id") or "")
+                        if key in subscription_tool_calls:
+                            subscription_tool_calls[key]["arguments"] += data.get("delta") or ""
+                    elif evt in ("response.function_call_arguments.done", "response.output_item.done"):
+                        item = data.get("item") or data
+                        key = str(item.get("id") or data.get("item_id") or item.get("call_id") or data.get("call_id") or "")
+                        if key in subscription_tool_calls:
+                            arguments = item.get("arguments") or data.get("arguments")
+                            if arguments:
+                                subscription_tool_calls[key]["arguments"] = arguments
                     elif evt == "response.completed":
                         usage = (data.get("response") or {}).get("usage") or data.get("usage") or {}
                         input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or input_tokens
                         output_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or output_tokens
+                        if subscription_tool_calls:
+                            yield f'data: {json.dumps({"type": "tool_calls", "calls": list(subscription_tool_calls.values())})}\n\n'
                         if input_tokens or output_tokens:
                             yield f'data: {json.dumps({"type": "usage", "data": {"input_tokens": input_tokens, "output_tokens": output_tokens}})}\n\n'
                         yield "data: [DONE]\n\n"

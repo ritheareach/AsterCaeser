@@ -10,10 +10,22 @@ import logging
 from core.session_manager import SessionManager
 from core.models import ChatMessage
 from src.request_models import SessionResponse
-from core.database import Session as DbSession, SessionLocal, Document, GalleryImage, utcnow_naive
+from core.database import (
+    Session as DbSession,
+    SessionLocal,
+    Document,
+    GalleryImage,
+    Project,
+    utcnow_naive,
+)
 from src.auth_helpers import effective_user, _auth_disabled, owner_filter
 from src.session_actions import is_session_recently_active
 from src.upload_handler import reserve_message_upload_references
+
+
+class ProjectSessionResponse(SessionResponse):
+    """Existing create-session response plus its optional project binding."""
+    project_id: str | None = None
 
 
 def _sanitize_export_filename(name: str) -> str:
@@ -37,6 +49,27 @@ def _public_model(name: str, model: str) -> str:
     if (name or "").startswith(COMPARE_SESSION_PREFIX):
         return ""
     return model
+
+
+def _normalise_project_id(value: str | None) -> str | None:
+    value = value.strip() if isinstance(value, str) else ""
+    return value or None
+
+
+def _project_belongs_to_request(db, project_id: str, user: str | None) -> bool:
+    """Validate the project without widening anonymous legacy access.
+
+    Workspace's older anonymous routes persisted ``__system__``; session
+    routes represent the same single-user mode with ``None``.  That alias is
+    the only anonymous compatibility exception.  A request with no identity
+    never gains access to a named user's project.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return False
+    if user is None:
+        return project.owner in (None, "__system__")
+    return project.owner == user
 
 
 def _content_to_text(content) -> str:
@@ -218,8 +251,9 @@ def setup_session_routes(
     SESSIONS_FILE = config.get("SESSIONS_FILE")
     
     @router.get("/sessions")
-    def list_sessions(request: Request):
+    def list_sessions(request: Request, project_id: str | None = None):
         user = effective_user(request)
+        project_id = _normalise_project_id(project_id)
         # Lazy purge: incognito sessions are ephemeral by design — wipe leftovers
         # from the DB and session_manager so they vanish on the next page refresh.
         # BUT: skip sessions that were created within the last 10 minutes.
@@ -265,10 +299,22 @@ def setup_session_routes(
             last_msg_map = {}
             mode_map = {}
             msg_count_map = {}
-            q = db.query(DbSession.id, DbSession.folder, DbSession.total_input_tokens, DbSession.total_output_tokens, DbSession.is_important, DbSession.created_at, DbSession.updated_at, DbSession.last_message_at, DbSession.mode, DbSession.message_count).filter(DbSession.archived == False)
+            if project_id and not _project_belongs_to_request(db, project_id, user):
+                raise HTTPException(404, "Project not found")
+
+            q = db.query(DbSession.id, DbSession.folder, DbSession.total_input_tokens, DbSession.total_output_tokens, DbSession.is_important, DbSession.created_at, DbSession.updated_at, DbSession.last_message_at, DbSession.mode, DbSession.message_count, DbSession.project_id).filter(DbSession.archived == False)
             q = owner_filter(q, DbSession, user)
+            # Scope on the authoritative DB query, rather than relying on the
+            # sidebar's client-side filter.  The legacy default remains the
+            # unscoped view; project chats never bleed back into it.
+            if project_id:
+                q = q.filter(DbSession.project_id == project_id)
+            else:
+                q = q.filter(DbSession.project_id == None)  # noqa: E711
             rows = q.all()
+            visible_session_ids = set()
             for row in rows:
+                visible_session_ids.add(row.id)
                 folder_map[row.id] = row.folder
                 token_map[row.id] = (row.total_input_tokens or 0) + (row.total_output_tokens or 0)
                 important_map[row.id] = row.is_important or False
@@ -315,15 +361,17 @@ def setup_session_routes(
                      "has_documents": s.id in doc_session_ids,
                      "has_images": s.id in img_session_ids,
                      "mode": mode_map.get(s.id),
-                     "message_count": msg_count_map.get(s.id, 0)}
+                     "message_count": msg_count_map.get(s.id, 0),
+                     "project_id": project_id}
                     for s in user_sessions.values()
-                    if not s.archived
+                    if s.id in visible_session_ids
+                    and not s.archived
                     and (s.name or "").strip() not in ("Nobody", "Incognito")
                     and (s.name or "").strip() not in _HIDDEN_SYSTEM_SESSION_NAMES]
 
         return sessions
     
-    @router.post("/session", response_model=SessionResponse)
+    @router.post("/session", response_model=ProjectSessionResponse)
     def create_session(
         request: Request,
         name: str = Form(""),
@@ -333,6 +381,7 @@ def setup_session_routes(
         skip_validation: str = Form(None),
         api_key: str = Form(""),
         endpoint_id: str = Form(""),
+        project_id: str = Form(None),
     ):
         skip_val = str(skip_validation).lower() == "true"
         user = effective_user(request)
@@ -421,6 +470,14 @@ def setup_session_routes(
         
         sid = str(uuid.uuid4())
         user = effective_user(request)
+        project_id = _normalise_project_id(project_id)
+        if project_id:
+            db = SessionLocal()
+            try:
+                if not _project_belongs_to_request(db, project_id, user):
+                    raise HTTPException(404, "Project not found")
+            finally:
+                db.close()
         session = session_manager.create_session(
             session_id=sid,
             name=name or "",
@@ -428,6 +485,7 @@ def setup_session_routes(
             model=model_to_use,
             rag=str(rag).lower() == "true" if rag else False,
             owner=user,
+            project_id=project_id,
         )
         # Set auth headers for custom API-key endpoints
         resolved_key = request_api_key
@@ -447,12 +505,13 @@ def setup_session_routes(
         # Fire event for automation tasks
         from src.event_bus import fire_event
         fire_event("session_created", user)
-        return SessionResponse(
+        return ProjectSessionResponse(
             id=sid,
             name=session.name,
             model=model_to_use,
             rag=str(rag).lower() == "true" if rag else False,
-            archived=False
+            archived=False,
+            project_id=project_id,
         )    
     @router.patch("/session/{sid}")
     def rename_session(
@@ -879,12 +938,21 @@ def setup_session_routes(
         request: Request,
         name: str = Form("New Chat (OpenAI)"),
         model: str = Form("gpt-4o"),
-        rag: str = Form(None)
+        rag: str = Form(None),
+        project_id: str = Form(None),
     ):
         if not OPENAI_API_KEY:
             raise HTTPException(400, "Server missing OPENAI_API_KEY")
         sid = str(uuid.uuid4())
         user = effective_user(request)
+        project_id = _normalise_project_id(project_id)
+        if project_id:
+            db = SessionLocal()
+            try:
+                if not _project_belongs_to_request(db, project_id, user):
+                    raise HTTPException(404, "Project not found")
+            finally:
+                db.close()
         session = session_manager.create_session(
             session_id=sid,
             name="",
@@ -892,12 +960,13 @@ def setup_session_routes(
             model=model,
             rag=str(rag).lower() == "true",
             owner=user,
+            project_id=project_id,
         )
         session.headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
         session_manager.save_sessions()
         from src.event_bus import fire_event
         fire_event("session_created", user)
-        return {"id": sid, "name": "", "model": model}
+        return {"id": sid, "name": "", "model": model, "project_id": project_id}
     
     @router.post("/session/{session_id}/important")
     async def mark_session_important(request: Request, session_id: str, important: bool = Form(True)):

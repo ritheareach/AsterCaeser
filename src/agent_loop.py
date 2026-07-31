@@ -3059,7 +3059,12 @@ async def stream_agent_loop(
     # the fenced-block path is used instead of native function calling.
     _is_ollama_native = _is_ollama_native_url(endpoint_url or "")
     _ollama_openai_compat = _is_ollama_openai_compat_url(endpoint_url or "")
-    if _endpoint_supports is True:
+    # ChatGPT Subscription is a Responses API provider. Existing endpoint
+    # records created before native-tool support was added stored False; treat
+    # them as capable so every model on that subscription receives the same
+    # shared agent permissions without requiring re-registration.
+    _is_chatgpt_subscription = "chatgpt.com/backend-api/codex" in (endpoint_url or "")
+    if _endpoint_supports is True or _is_chatgpt_subscription:
         _is_api_model = True
     elif (
         _endpoint_supports is False
@@ -4277,6 +4282,11 @@ async def stream_agent_loop(
             # Forward a file-write diff for inline before/after rendering
             if "diff" in result:
                 tool_output_data["diff"] = result["diff"]
+            # File tools return a project-relative path when their workspace
+            # confinement is active. The browser uses it to refresh an open
+            # editor tab and tree after an agent modifies a real project file.
+            if block.tool_type in {"write_file", "edit_file"} and result.get("path"):
+                tool_output_data["path"] = result["path"]
             yield f'data: {json.dumps(tool_output_data)}\n\n'
 
             if block.tool_type == "manage_notes":

@@ -82,7 +82,10 @@ def _provision_endpoint(tokens: Dict, owner: Optional[str]) -> Dict:
         ep.api_key = None
         ep.provider_auth_id = auth.id
         ep.is_enabled = True
-        ep.supports_tools = False
+        # The Codex Responses endpoint supports native function tools.  Keep
+        # this enabled for every subscription model instead of making agents
+        # depend on individual model-name heuristics or textual tool fences.
+        ep.supports_tools = True
         ep.model_type = "llm"
         ep.endpoint_kind = "api"
         ep.model_refresh_mode = "manual"

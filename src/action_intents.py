@@ -110,6 +110,12 @@ _ROUTING_PATTERNS: tuple[tuple[str, str, Pattern[str]], ...] = tuple(
         ("research", "deep research imperative request", rf"{_PLEASE}(?:research|deep\s+dive|look\s+into|investigate)\s+.+"),
         ("research", "assistant deep research request", rf"{_ACTION_QUESTION}(?:research|do\s+research|deep\s+dive|look\s+into|investigate)\s+.+"),
 
+        # Project file actions. These are intentionally separate from generic
+        # shell intent: the agent should use the confined write_file/edit_file
+        # tools rather than asking the user to run a command themselves.
+        ("files", "project file creation or edit request", rf"{_PLEASE}(?:create|make|write|edit|update|delete|remove)\b.{{0,120}}\b(?:file|folder|directory|\.txt\b|\.md\b|\.json\b|\.py\b|\.js\b|\.ts\b|\.html\b|\.css\b)"),
+        ("files", "assistant project file action request", rf"{_ACTION_QUESTION}(?:create|make|write|edit|update|delete|remove)\b.{{0,120}}\b(?:file|folder|directory)\b"),
+
         # Shell / remote-host intent.
         ("shell", "ssh request", r"\bssh\s+(?:in)?to\b"),
         ("shell", "ssh target request", r"\bssh\s+\w+"),

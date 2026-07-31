@@ -1613,14 +1613,22 @@ export async function loadSessions() {
     // Delete incognito sessions left over from a previous page load
     await _cleanupIncognitoSessions();
 
-    // Use prefetched data from login page if available (first load only)
+    // Scope at the API boundary.  An active project must never be simulated
+    // solely by hiding entries from an unscoped response.
+    const activeProjectId = Storage.get('astercaeser-active-project', null);
+    const scopeQuery = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : '';
+
+    // Use prefetched data from login page only for the unscoped first load.
+    // It predates an explicit project selection and cannot prove this scope.
     const prefetched = sessionStorage.getItem('ody-prefetch-sessions');
     let fetched;
-    if (prefetched) {
+    if (prefetched && !activeProjectId) {
       sessionStorage.removeItem('ody-prefetch-sessions');
       fetched = JSON.parse(prefetched);
     } else {
-      const res = await fetch(`${API_BASE}/api/sessions`);
+      if (prefetched) sessionStorage.removeItem('ody-prefetch-sessions');
+      const res = await fetch(`${API_BASE}/api/sessions${scopeQuery}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error(`Unable to load chats (${res.status})`);
       fetched = await res.json();
     }
     sessions = _normalizeSessionsList(fetched);
@@ -1666,8 +1674,10 @@ export async function loadSessions() {
       targetId = hashId;
     } else if (currentSessionId && activeSessions.some(s => s.id === currentSessionId)) {
       targetId = currentSessionId;
-    } else if (currentSessionId) {
+    } else if (currentSessionId && !activeProjectId) {
       // Session was just created but may not be in the list yet — keep it
+      // only for unscoped loading. Retaining it while a project is selected
+      // would surface a chat outside the server-returned project scope.
       targetId = currentSessionId;
     } else if (savedId && activeSessions.some(s => s.id === savedId)) {
       targetId = savedId;
@@ -2089,7 +2099,7 @@ export async function selectSession(id, { keepSidebar = false, showLoading = tru
 }
 
 // Pending session — stored locally until the first message is sent
-let _pendingChat = null; // { url, modelId, endpointId }
+let _pendingChat = null; // { url, modelId, endpointId, projectId }
 
 export function createDirectChat(url, modelId, endpointId) {
   _sessionNavToken++;
@@ -2105,7 +2115,15 @@ export function createDirectChat(url, modelId, endpointId) {
   }
 
   // Don't hit the API — just store the model info and prepare the UI
-  _pendingChat = { url, modelId, endpointId };
+  // Capture project scope when the user starts the chat.  Looking it up only
+  // when the first message is sent could associate a pending chat with a
+  // project selected after the chat was opened.
+  _pendingChat = {
+    url,
+    modelId,
+    endpointId,
+    projectId: Storage.get('astercaeser-active-project', null),
+  };
   _skipAutoSelect = true;
   _suppressNextSessionLoading = true;
   currentSessionId = null;
@@ -2169,9 +2187,11 @@ export async function materializePendingSession() {
   if (pending.endpointId) {
     fd.append('endpoint_id', pending.endpointId);
   }
-  const activeProjectId = localStorage.getItem('astercaeser-active-project');
-  if (activeProjectId) {
-    fd.append('project_id', activeProjectId);
+  // Keep the project captured when New Chat was clicked, but recover from a
+  // pending chat restored by an older UI state that did not capture it yet.
+  const projectId = pending.projectId || Storage.get('astercaeser-active-project', null);
+  if (projectId) {
+    fd.append('project_id', projectId);
   }
 
   let res;
@@ -2219,6 +2239,58 @@ export function getPendingChat() { return _pendingChat; }
 // Getters for external access
 export function getCurrentSessionId() {
   return currentSessionId;
+}
+
+function _sessionProjectId(session) {
+  return String(session?.project_id || session?.projectId || '');
+}
+
+/**
+ * Activate a project-scoped chat (or create a pending one) and send a bounded
+ * editor prompt through the ordinary composer. This is the only bridge used by
+ * `aster:editor-ask-agent`; the editor never calls session/chat APIs directly.
+ */
+export async function startEditorAgentChat({ projectId, prompt } = {}) {
+  const scopedProjectId = String(projectId || '');
+  const message = String(prompt || '');
+  if (!scopedProjectId || !message) throw new Error('The editor did not provide a project-scoped selection.');
+
+  // `createDirectChat` snapshots this value into its pending session, ensuring
+  // a first-message session is created under the project the editor opened.
+  Storage.set('astercaeser-active-project', scopedProjectId);
+
+  const current = sessions.find(session => String(session.id) === String(currentSessionId));
+  const scoped = [current, ...sessions].find(session =>
+    session && !session.archived && _sessionProjectId(session) === scopedProjectId,
+  );
+
+  if (scoped?.id != null) {
+    await selectSession(scoped.id, { keepSidebar: true, showLoading: true });
+  } else {
+    // Reuse a known model configuration to create a new *project-scoped*
+    // pending chat. If none exists, use the same default-chat fallback as the
+    // regular composer instead of inventing a session API.
+    let modelSource = current && current.endpoint_url && current.model ? current : null;
+    if (!modelSource) modelSource = sessions.find(session => session?.endpoint_url && session?.model) || null;
+    if (modelSource) {
+      createDirectChat(modelSource.endpoint_url, modelSource.model, modelSource.endpoint_id);
+    } else {
+      const response = await fetch(`${API_BASE}/api/default-chat`, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error('No chat model is configured for a new project chat.');
+      const config = await response.json();
+      if (!config?.endpoint_url || !config?.model) throw new Error('No chat model is configured for a new project chat.');
+      createDirectChat(config.endpoint_url, config.model, config.endpoint_id);
+    }
+  }
+
+  const input = document.getElementById('message');
+  if (!input || !window.chatModule?.handleChatSubmit) throw new Error('Chat is not ready to receive the editor request.');
+  input.disabled = false;
+  input.value = message;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+  await window.chatModule.handleChatSubmit({ preventDefault() {} });
+  return true;
 }
 
 export function getSessions() {
@@ -3474,6 +3546,20 @@ document.addEventListener('start-chat', (e) => {
     if (header) header.click();
   }
 });
+// Documented project-editor bridge. Its payload is intentionally already
+// assembled by editor/ai.js and contains location metadata plus selected text
+// only; do not expand it with the active file or unrelated editor state here.
+document.addEventListener('aster:editor-ask-agent', event => {
+  const detail = event.detail || {};
+  void startEditorAgentChat(detail)
+    .then(() => {
+      try { detail.onAccepted?.(); } catch (_) {}
+    })
+    .catch(error => {
+      try { detail.onError?.(error); } catch (_) {}
+      uiModule.showError?.(`Could not start the project chat: ${error.message}`);
+    });
+});
 
 // Export all functions to window for use in main app
 const sessionModule = {
@@ -3486,6 +3572,7 @@ const sessionModule = {
   hasPendingChat,
   getPendingChat,
   getCurrentSessionId,
+  startEditorAgentChat,
   getSessions,
   getCurrentModel,
   getCurrentEndpointUrl,

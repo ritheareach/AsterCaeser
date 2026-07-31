@@ -131,3 +131,27 @@ def test_chatgpt_subscription_payload_omits_max_output_tokens_when_zero():
     )
 
     assert "max_output_tokens" not in payload
+
+
+def test_chatgpt_subscription_payload_converts_function_tools_for_responses_api():
+    payload = llm_core._build_chatgpt_responses_payload(
+        "gpt-5.6-sol",
+        [{"role": "user", "content": "Create a file"}],
+        temperature=0.2,
+        max_tokens=0,
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write a file",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+            },
+        }],
+    )
+
+    assert payload["tools"] == [{
+        "type": "function",
+        "name": "write_file",
+        "description": "Write a file",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+    }]

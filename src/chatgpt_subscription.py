@@ -303,13 +303,56 @@ def build_responses_input(messages: list[dict]) -> list[dict]:
     input_items: list[dict] = []
     for msg in messages or []:
         role = msg.get("role") or "user"
+        # The Responses API represents tool calls as top-level input items,
+        # not as Chat Completions assistant/tool messages. Preserve the call
+        # IDs so the next agent round can associate each result correctly.
+        if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+            text = "" if msg.get("content") is None else str(msg.get("content") or "")
+            if text:
+                input_items.append({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
+            for call in msg["tool_calls"]:
+                function = call.get("function") or {}
+                name = function.get("name")
+                if not name:
+                    continue
+                input_items.append({
+                    "type": "function_call",
+                    "call_id": call.get("id") or "call_unknown",
+                    "name": name,
+                    "arguments": function.get("arguments") or "{}",
+                })
+            continue
         if role == "tool":
+            call_id = msg.get("tool_call_id")
+            if call_id:
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "" if msg.get("content") is None else str(msg.get("content")),
+                })
+                continue
             role = "user"
         content = msg.get("content")
         if isinstance(content, list):
-            text = "\n".join(str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict))
+            blocks = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type == "image_url":
+                    img_url = (part.get("image_url") or {}).get("url", "")
+                    if img_url:
+                        blocks.append({"type": "input_image", "image_url": img_url})
+                else:
+                    ptext = str(part.get("text") or part.get("content") or "")
+                    if ptext:
+                        ptype = "output_text" if role == "assistant" else "input_text"
+                        blocks.append({"type": ptype, "text": ptext})
+            if not blocks:
+                blocks.append({"type": "input_text", "text": ""})
+            input_items.append({"role": role, "content": blocks})
         else:
             text = "" if content is None else str(content)
-        input_type = "output_text" if role == "assistant" else "input_text"
-        input_items.append({"role": role, "content": [{"type": input_type, "text": text}]})
+            input_type = "output_text" if role == "assistant" else "input_text"
+            input_items.append({"role": role, "content": [{"type": input_type, "text": text}]})
     return input_items

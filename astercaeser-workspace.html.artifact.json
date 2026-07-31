@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "astercaeser-workspace.html",
+  "entry": "astercaeser-workspace.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-07-29T14:44:15.158Z",
+  "updatedAt": "2026-07-29T14:44:15.158Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

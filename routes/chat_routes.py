@@ -28,7 +28,7 @@ from src.auth_helpers import effective_user, get_current_user
 from routes.session_routes import _verify_session_owner
 from routes.document_helpers import _owner_session_filter
 from core.database import SessionLocal, get_session_mode, set_session_mode
-from core.database import Session as DBSession, ChatMessage as DBChatMessage
+from core.database import Session as DBSession, ChatMessage as DBChatMessage, Project
 from core.database import Document as DBDocument, ModelEndpoint
 from core.log_safety import redact_url
 from routes.research_routes import _resolve_research_endpoint
@@ -119,6 +119,15 @@ _RECENT_WEB_CONTEXT_RE = re.compile(
     r"price|current|latest|search|look\s+up|online)\b",
     re.I,
 )
+_FILE_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:edit|update|change|modify|delete|remove|rename)\s+"
+    r"(?:it|that|this|the\s+(?:file|script|code))\b",
+    re.I,
+)
+_RECENT_FILE_ACTION_RE = re.compile(
+    r"\b(?:created|wrote|updated|edited|saved)\b.{0,100}\b(?:file|script|\.py\b|\.js\b|\.txt\b|\.md\b|\.json\b)",
+    re.I,
+)
 
 
 def _recent_session_text(sess, limit: int = 8, max_chars: int = 2000) -> str:
@@ -139,6 +148,13 @@ def _is_contextual_web_followup(message: str, sess) -> bool:
     if not message or not _WEB_FOLLOWUP_RE.search(message):
         return False
     return bool(_RECENT_WEB_CONTEXT_RE.search(_recent_session_text(sess)))
+
+
+def _is_contextual_file_followup(message: str, sess) -> bool:
+    """Continue a just-completed project file action without requiring its name again."""
+    if not message or not _FILE_FOLLOWUP_RE.search(message):
+        return False
+    return bool(_RECENT_FILE_ACTION_RE.search(_recent_session_text(sess)))
 
 
 def _resolve_request_workspace(request, raw_value) -> tuple:
@@ -166,6 +182,57 @@ def _resolve_request_workspace(request, raw_value) -> tuple:
     from src.tool_execution import vet_workspace
     workspace = vet_workspace(requested) or ""
     return workspace, (requested if not workspace else "")
+
+
+def _bind_unscoped_session_to_project(sess, requested_project_id, owner: Optional[str]) -> None:
+    """Safely repair a session created before the project scope reached the API.
+
+    A selected project is client state, so it is never trusted by itself.  The
+    project must belong to the current caller, and an existing session scope is
+    deliberately never overwritten by a later UI selection.
+    """
+    project_id = str(requested_project_id or "").strip()
+    if not project_id or getattr(sess, "project_id", None):
+        return
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            return
+        if owner:
+            if project.owner != owner:
+                return
+        elif project.owner not in (None, "__system__"):
+            return
+        row = db.query(DBSession).filter(DBSession.id == sess.id).first()
+        if not row or row.project_id:
+            return
+        row.project_id = project.id
+        db.commit()
+        sess.project_id = project.id
+        logger.info("Bound unscoped chat session %s to project %s", sess.id, project.id)
+    except Exception:
+        db.rollback()
+        logger.exception("Unable to bind chat session %s to selected project", getattr(sess, "id", "unknown"))
+    finally:
+        db.close()
+
+
+def _project_workspace_for_session(sess, owner: Optional[str]) -> str:
+    """Return the owner-checked directory bound to this chat's project."""
+    project_id = str(getattr(sess, "project_id", "") or "").strip()
+    if not project_id:
+        return ""
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project or not project.path:
+            return ""
+        if owner:
+            return project.path if project.owner == owner else ""
+        return project.path if project.owner in (None, "__system__") else ""
+    finally:
+        db.close()
 
 
 def _session_url_matches_endpoint(session_url: str, endpoint_base: str) -> bool:
@@ -443,6 +510,7 @@ def setup_chat_routes(
         except KeyError:
             raise HTTPException(404, f"Session '{session}' not found")
         owner = effective_user(request)
+        _bind_unscoped_session_to_project(sess, chat_request.project_id, owner)
         if _clear_orphaned_session_endpoint(sess, owner=owner):
             raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
 
@@ -556,6 +624,7 @@ def setup_chat_routes(
         use_research = form_data.get("use_research")
         time_filter = form_data.get("time_filter")
         preset_id = form_data.get("preset_id")
+        requested_project_id = form_data.get("project_id") or (body or {}).get("project_id")
         # Issue #3229: API callers send JSON, not FormData.  Read from the
         # JSON body as fallback so callers who send {"allow_bash": true}
         # actually get bash enabled.
@@ -688,6 +757,17 @@ def setup_chat_routes(
             _verify_session_owner(request, session)
             sess = session_manager.get_session(session)
             owner = effective_user(request)
+            _bind_unscoped_session_to_project(sess, requested_project_id, owner)
+            # A project-bound chat carries an explicit filesystem authority:
+            # bind its own saved directory as the per-turn workspace. The
+            # normal workspace validator still applies, including its admin
+            # gate and sensitive-path checks, so a project label cannot widen
+            # access beyond its approved directory.
+            if not workspace:
+                project_workspace = _project_workspace_for_session(sess, owner)
+                if project_workspace:
+                    workspace, project_workspace_rejected = _resolve_request_workspace(request, project_workspace)
+                    workspace_rejected = workspace_rejected or project_workspace_rejected
             if _clear_orphaned_session_endpoint(sess, owner=owner):
                 raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
             # Issue #587: picker shows a model from the endpoint cache but
@@ -709,6 +789,20 @@ def setup_chat_routes(
                 and _is_contextual_web_followup(message, sess)
             ):
                 _tool_intent = ToolIntent(True, "web", "contextual web lookup follow-up")
+                chat_mode = "agent"
+                auto_escalated = True
+                logger.info(
+                    "chat→agent auto-escalation: category=%s reason=%s",
+                    _tool_intent.category,
+                    _tool_intent.reason,
+                )
+            elif (
+                chat_mode == "chat"
+                and isinstance(message, str)
+                and (not _tool_intent or not _tool_intent.needs_tools)
+                and _is_contextual_file_followup(message, sess)
+            ):
+                _tool_intent = ToolIntent(True, "files", "contextual project file edit follow-up")
                 chat_mode = "agent"
                 auto_escalated = True
                 logger.info(
@@ -959,9 +1053,15 @@ def setup_chat_routes(
         # tries to shell out for a request that never needed it, then fails
         # (and looks broken when the shell is disabled).
         if auto_escalated:
-            disabled_tools.update({
-                "bash", "python", "read_file", "write_file", "builtin_browser",
-            })
+            if _tool_intent and _tool_intent.category == "files":
+                # File requests use the confined file tools. Keep arbitrary
+                # shell and Python off, but allow the agent to read/create/edit
+                # inside the active project workspace.
+                disabled_tools.update({"bash", "python", "builtin_browser"})
+            else:
+                disabled_tools.update({
+                    "bash", "python", "read_file", "write_file", "builtin_browser",
+                })
 
         # Disable document tools in compare sessions — they break the pane UI
         if sess.name and sess.name.startswith("[CMP]"):
@@ -1405,6 +1505,10 @@ def setup_chat_routes(
                     _forced_tools = None
                     if _search_enabled:
                         _forced_tools = set(WEB_TOOL_NAMES)
+                    if _tool_intent and _tool_intent.category == "files" and workspace:
+                        _forced_tools = (_forced_tools or set()) | {
+                            "read_file", "write_file", "edit_file", "ls", "get_workspace",
+                        }
 
                     async for chunk in stream_agent_loop(
                         sess.endpoint_url,

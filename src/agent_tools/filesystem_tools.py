@@ -70,6 +70,18 @@ def _unified_diff(old: str, new: str, path: str) -> Optional[Dict[str, Any]]:
         "file": os.path.basename(path) or (path or "file"),
     }
 
+
+def _project_relative_path(path: str) -> str:
+    """Return a project-relative path for UI refresh events when possible."""
+    try:
+        from src.tool_execution import get_active_workspace
+        workspace = get_active_workspace()
+        if workspace and os.path.commonpath([os.path.realpath(path), os.path.realpath(workspace)]) == os.path.realpath(workspace):
+            return os.path.relpath(path, workspace).replace(os.sep, "/")
+    except (ValueError, OSError):
+        pass
+    return ""
+
 class EditFileTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import _resolve_tool_path, _resolve_search_root, _truncate
@@ -124,7 +136,11 @@ class EditFileTool:
             return {"error": f"edit_file: old_string is not unique in {path} ({n} matches). Add surrounding context or set replace_all=true.", "exit_code": 1}
 
         n = original.count(old)
-        result = {"output": f"Edited {path} ({n} replacement{'s' if n != 1 else ''})", "exit_code": 0}
+        result = {
+            "output": f"Edited {path} ({n} replacement{'s' if n != 1 else ''})",
+            "exit_code": 0,
+            "path": _project_relative_path(path),
+        }
         diff = _unified_diff(original, updated, path)
         if diff:
             result["diff"] = diff
@@ -225,7 +241,11 @@ class WriteFileTool:
         except OSError as e:
             return {"error": f"write_file: {path}: {e}", "exit_code": 1}
         diff = _unified_diff(old_content, body, path)
-        result = {"output": f"Wrote {size} bytes to {path}", "exit_code": 0}
+        result = {
+            "output": f"Wrote {size} bytes to {path}",
+            "exit_code": 0,
+            "path": _project_relative_path(path),
+        }
         if diff:
             result["diff"] = diff
         return result

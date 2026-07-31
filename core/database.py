@@ -205,7 +205,14 @@ class Project(TimestampMixin, Base):
     owner = Column(String, nullable=True, index=True)
 
     workspace = relationship("Workspace", back_populates="projects")
-    sessions = relationship("Session", back_populates="project")
+    # Scoped content deliberately survives a project deletion.  The database
+    # foreign keys below use SET NULL, and passive_deletes leaves that work to
+    # the database rather than loading every associated chat/note/task first.
+    sessions = relationship("Session", back_populates="project", passive_deletes=True)
+    notes = relationship("Note", back_populates="project", passive_deletes=True)
+    scheduled_tasks = relationship(
+        "ScheduledTask", back_populates="project", passive_deletes=True
+    )
 
     def to_dict(self):
         return {
@@ -299,6 +306,7 @@ class Session(TimestampMixin, Base):
             'total_input_tokens': self.total_input_tokens or 0,
             'total_output_tokens': self.total_output_tokens or 0,
             'crew_member_id': self.crew_member_id,
+            'project_id': self.project_id,
         }
 
 class ChatMessage(Base):
@@ -713,6 +721,9 @@ class ScheduledTask(TimestampMixin, Base):
     status         = Column(String, default="active")         # "active", "paused", "completed"
     output_target  = Column(String, default="session")        # "session" (extensible later)
     session_id     = Column(String, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True)
+    # Project association is optional so pre-workspace tasks remain in the
+    # unscoped task view.  Deleting a project must retain its task history.
+    project_id     = Column(String, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
     model          = Column(String, nullable=True)
     endpoint_url   = Column(String, nullable=True)
     run_count      = Column(Integer, default=0)
@@ -730,6 +741,7 @@ class ScheduledTask(TimestampMixin, Base):
     notifications_enabled = Column(Boolean, default=True) # per-task on/off for completion notifications
 
     session = relationship("Session", backref=backref("scheduled_tasks", cascade="save-update, merge"))
+    project = relationship("Project", back_populates="scheduled_tasks")
     then_task = relationship("ScheduledTask", remote_side=[id], foreign_keys=[then_task_id])
 
     __table_args__ = (
@@ -1768,6 +1780,9 @@ class Note(TimestampMixin, Base):
     due_date   = Column(String, nullable=True)
     source     = Column(String, default="user")     # "user" or "agent"
     session_id = Column(String, nullable=True)
+    # Project association is intentionally nullable for backwards-compatible
+    # personal notes.  SET NULL preserves the note when a project is removed.
+    project_id = Column(String, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
     sort_order = Column(Integer, default=0)
     image_url  = Column(String, nullable=True)      # uploaded image URL (relative path)
     repeat     = Column(String, default="none")     # none, daily, weekly, monthly, yearly
@@ -1779,6 +1794,8 @@ class Note(TimestampMixin, Base):
     # Chat session spawned by the note's "Agent" button (solve-this-todo).
     # The note shows a clickable tag that opens this session for review.
     agent_session_id  = Column(String, nullable=True)
+
+    project = relationship("Project", back_populates="notes")
 
 
 class CalendarCal(TimestampMixin, Base):
@@ -2023,6 +2040,7 @@ def init_db():
     _migrate_encrypt_endpoint_keys()
     _migrate_add_workspace_project_tables()
     _migrate_add_project_id_column()
+    _migrate_add_project_content_columns()
     _migrate_backfill_task_folders()
 
 
@@ -2060,6 +2078,53 @@ def _migrate_add_project_id_column():
                 logger.info("Added project_id column to sessions table")
     except Exception as e:
         logger.warning("Could not add project_id column: %s", e)
+
+
+def _migrate_add_project_content_columns():
+    """Add nullable project links to pre-workspace notes and scheduled tasks.
+
+    ``create_all`` creates these columns for fresh databases.  Existing
+    SQLite databases need an additive migration instead; nullable columns keep
+    every legacy record in its existing unscoped list.  The FK action is SET
+    NULL so project removal cannot destroy a user's notes or task history.
+    """
+    if engine.dialect.name != "sqlite":
+        # Non-SQLite deployments get the mapped columns through their normal
+        # schema migration process.  This app's in-place compatibility
+        # migrations are intentionally SQLite-only.
+        return
+
+    tables = (
+        ("notes", "ix_notes_project_id"),
+        ("scheduled_tasks", "ix_scheduled_tasks_project_id"),
+    )
+    try:
+        with engine.connect() as conn:
+            for table_name, index_name in tables:
+                exists = conn.execute(text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"
+                ), {"table_name": table_name}).fetchone()
+                if not exists:
+                    # A partially initialized database will have the table
+                    # created by create_all on the next startup; nothing to
+                    # alter yet.
+                    continue
+                columns = {
+                    row[1]
+                    for row in conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+                }
+                if "project_id" not in columns:
+                    conn.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN "
+                        "project_id VARCHAR REFERENCES projects(id) ON DELETE SET NULL"
+                    ))
+                    logger.info("Added project_id column to %s", table_name)
+                conn.execute(text(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} (project_id)"
+                ))
+            conn.commit()
+    except Exception as e:
+        logger.warning("Could not add project_id columns to scoped content: %s", e)
 
 
 def _migrate_backfill_task_folders():

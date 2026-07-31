@@ -61,6 +61,8 @@ _VISION_MODEL_KEYWORDS = (
     "phi-4", "phi4",
     # zhipu / glm (glm-4.5v, glm-4.6v, glm-5v-turbo, etc.)
     "glm-4.5v", "glm-4.6v", "glm-5v",
+    # The mimo family accepts images natively.
+    "mimo",
 )
 # Catches the "*-VL-*" / "*VL*" family not covered by a literal keyword above
 # (e.g. Qwen2.5-VL and various tags): a standalone "vl" token, plus "vlm".
@@ -83,6 +85,10 @@ def is_vision_model(model_name: str) -> bool:
 _PROVIDER_FINGERPRINT_TTL = 60.0
 # (host, port) -> (models_list | None, expiry); list = LM Studio, None = not LM Studio.
 _lmstudio_models_cache: dict = {}
+# (host, port) -> (capabilities dict | None, expiry)
+_ollama_show_cache: dict = {}
+# (host, port) -> (props dict | None, expiry)
+_llamacpp_props_cache: dict = {}
 
 
 def _is_local_host(host: Optional[str]) -> bool:
@@ -101,18 +107,25 @@ def _is_local_host(host: Optional[str]) -> bool:
     return ip in ipaddress.ip_network("100.64.0.0/10")
 
 
+def _parse_endpoint(url: str) -> tuple:
+    """Parse endpoint URL to (scheme, host, port, authority)."""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port
+    authority = host if port is None else f"{host}:{port}"
+    return parsed.scheme or "http", host, port, authority
+
+
 def _probe_lmstudio_models(url: str) -> Optional[list]:
     """Return LM Studio's native /api/v1/models list, or None when the endpoint
     isn't LM Studio or is unreachable (short-TTL cached; transient errors uncached)."""
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    key = (host, parsed.port)
+    _, host, port, authority = _parse_endpoint(url)
+    key = (host, port)
     now = time.time()
     cached = _lmstudio_models_cache.get(key)
     if cached is not None and cached[1] > now:
         return cached[0]
-    authority = host if parsed.port is None else f"{host}:{parsed.port}"
-    probe_url = f"{parsed.scheme or 'http'}://{authority}/api/v1/models"
+    probe_url = f"http://{authority}/api/v1/models"
     try:
         r = httpx.get(probe_url, timeout=1.0)
     except Exception:
@@ -137,7 +150,6 @@ def lmstudio_supports_vision(url: str, model: str) -> Optional[bool]:
     endpoint isn't LM Studio or doesn't report it (so callers fall back)."""
     if not model:
         return None
-    # Never probe a remote provider; LM Studio is always a local/LAN host.
     if not _is_local_host(urlparse(url).hostname):
         return None
     models = _probe_lmstudio_models(url)
@@ -156,18 +168,229 @@ def lmstudio_supports_vision(url: str, model: str) -> Optional[bool]:
     return None
 
 
+def _probe_ollama_show(url: str, model: str) -> Optional[dict]:
+    """Probe Ollama's /api/show for a specific model and return its capabilities.
+
+    Returns the full response dict on success, or None if the endpoint isn't
+    Ollama or is unreachable. Results are cached per (host, port). Works for
+    any host — the probe has a 1s timeout and fails fast on non-Ollama servers.
+    """
+    if not model:
+        return None
+    scheme, host, port, authority = _parse_endpoint(url)
+    key = (host, port)
+    now = time.time()
+    cached = _ollama_show_cache.get(key)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+    probe_url = f"{scheme}://{authority}/api/show"
+    try:
+        r = httpx.post(probe_url, json={"model": model}, timeout=1.0)
+    except Exception:
+        return None
+    try:
+        data = r.json() if r.is_success else {}
+    except Exception:
+        data = {}
+    result = data if isinstance(data, dict) and "capabilities" in data else None
+    _ollama_show_cache[key] = (result, now + _PROVIDER_FINGERPRINT_TTL)
+    return result
+
+
+def _probe_ollama_tags(url: str) -> Optional[list]:
+    """Probe Ollama's /api/tags and return the model list with capabilities.
+
+    Unlike /api/show (one model per call), this returns ALL loaded models
+    with their capabilities in a single request. Results cached per host.
+    """
+    scheme, host, port, authority = _parse_endpoint(url)
+    key = (host, port)
+    now = time.time()
+    cached = _ollama_show_cache.get(("tags", key))
+    if cached is not None and cached[1] > now:
+        return cached[0]
+    probe_url = f"{scheme}://{authority}/api/tags"
+    try:
+        r = httpx.get(probe_url, timeout=1.0)
+    except Exception:
+        return None
+    try:
+        data = r.json() if r.is_success else {}
+    except Exception:
+        data = {}
+    models = data.get("models") if isinstance(data, dict) else None
+    result = models if isinstance(models, list) else None
+    _ollama_show_cache[("tags", key)] = (result, now + _PROVIDER_FINGERPRINT_TTL)
+    return result
+
+
+def ollama_supports_vision(url: str, model: str) -> Optional[bool]:
+    """Check if an Ollama model has the 'vision' capability.
+
+    Tries /api/tags first (returns capabilities for all models), then
+    /api/show (per-model). Returns True/False when the endpoint responds,
+    or None when it isn't Ollama or doesn't report capabilities.
+    """
+    want = model.strip().lower()
+    tags = _probe_ollama_tags(url)
+    if tags:
+        for m in tags:
+            name = (m.get("name") or m.get("model") or "").lower()
+            if want == name.replace(":latest", "") or want in name:
+                caps = m.get("capabilities")
+                if isinstance(caps, list):
+                    return "vision" in caps
+    data = _probe_ollama_show(url, model)
+    if data is None:
+        return None
+    caps = data.get("capabilities")
+    if isinstance(caps, list):
+        return "vision" in caps
+    return None
+
+
+def _probe_llamacpp_props(url: str) -> Optional[dict]:
+    """Probe llama.cpp server's /props endpoint for modality info.
+
+    Returns the full props dict on success, or None when the endpoint isn't
+    llama.cpp or is unreachable. Results are cached per (host, port). Works
+    for any host — the probe has a 1s timeout and fails fast on non-llama.cpp
+    servers.
+    """
+    scheme, host, port, authority = _parse_endpoint(url)
+    key = (host, port)
+    now = time.time()
+    cached = _llamacpp_props_cache.get(key)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+    probe_url = f"{scheme}://{authority}/props"
+    try:
+        r = httpx.get(probe_url, timeout=1.0)
+    except Exception:
+        return None
+    try:
+        data = r.json() if r.is_success else {}
+    except Exception:
+        data = {}
+    result = data if isinstance(data, dict) and "modalities" in data else None
+    _llamacpp_props_cache[key] = (result, now + _PROVIDER_FINGERPRINT_TTL)
+    return result
+
+
+def llamacpp_supports_vision(url: str) -> Optional[bool]:
+    """Check if llama.cpp server's loaded model supports vision via /props.
+
+    Returns True/False when the endpoint responds, or None when the endpoint
+    isn't llama.cpp or doesn't report modality info.
+    """
+    data = _probe_llamacpp_props(url)
+    if data is None:
+        return None
+    modalities = data.get("modalities")
+    if isinstance(modalities, dict):
+        return modalities.get("vision") is True
+    return None
+
+
+def ollama_supports_audio(url: str, model: str) -> Optional[bool]:
+    """Check if an Ollama model has audio input capability via /api/show."""
+    data = _probe_ollama_show(url, model)
+    if data is None:
+        return None
+    caps = data.get("capabilities")
+    if isinstance(caps, list):
+        return "audio" in caps
+    return None
+
+
+def llamacpp_supports_audio(url: str) -> Optional[bool]:
+    """Check if llama.cpp server supports audio input via /props."""
+    data = _probe_llamacpp_props(url)
+    if data is None:
+        return None
+    modalities = data.get("modalities")
+    if isinstance(modalities, dict):
+        return modalities.get("audio") is True
+    return None
+
+
+def _manual_image_capable_models() -> list:
+    """Return the list of model names manually configured as image-capable."""
+    try:
+        from src.settings import get_setting
+        raw = get_setting("image_capable_models") or []
+        return [str(m).strip().lower() for m in raw if m and str(m).strip()]
+    except Exception:
+        return []
+
+
 def model_supports_vision(model_name: str, endpoint_url: str = "") -> bool:
     """Whether a model accepts images, using the endpoint's reported
-    capability when available (LM Studio) and falling back to name-based
-    detection otherwise."""
+    capability when available (LM Studio / Ollama / llama.cpp / manual
+    config) and falling back to name-based detection otherwise.
+
+    Vendor probes are tried in order. The first authoritative answer
+    (True/False) wins. If no probe gives an answer, the name heuristic
+    is used.
+    """
+    # 1. Check the manually configured list first — overrides everything
+    manual = _manual_image_capable_models()
+    if model_name and model_name.lower() in manual:
+        return True
+
     if endpoint_url:
+        # 2. Try vendor-specific probes — each returns None when not applicable
+        for probe in (lmstudio_supports_vision, ollama_supports_vision):
+            try:
+                result = probe(endpoint_url, model_name or "")
+            except Exception:
+                result = None
+            if result is not None:
+                return result
         try:
-            advertised = lmstudio_supports_vision(endpoint_url, model_name or "")
+            result = llamacpp_supports_vision(endpoint_url)
         except Exception:
-            advertised = None
-        if advertised is not None:
-            return advertised
+            result = None
+        if result is not None:
+            return result
+
+    # 3. Fall back to name heuristic
     return is_vision_model(model_name)
+
+
+_AUDIO_MODEL_KEYWORDS = (
+    "gpt-4o-audio", "gpt-4o-realtime",
+    "gemini",
+    "claude-sonnet", "claude-haiku",
+)
+
+
+def is_audio_model(model_name: str) -> bool:
+    """Best-effort check of whether a model can natively accept audio input."""
+    m = (model_name or "").lower()
+    if any(kw in m for kw in _AUDIO_MODEL_KEYWORDS):
+        return True
+    return False
+
+
+def model_supports_audio(model_name: str, endpoint_url: str = "") -> bool:
+    """Whether a model accepts audio input, using endpoint capability
+    probes when available and falling back to name-based detection."""
+    if endpoint_url:
+        for probe in (ollama_supports_audio,):
+            try:
+                result = probe(endpoint_url, model_name or "")
+            except Exception:
+                result = None
+            if result is not None:
+                return result
+        try:
+            result = llamacpp_supports_audio(endpoint_url)
+        except Exception:
+            result = None
+        if result is not None:
+            return result
+    return is_audio_model(model_name)
 
 
 def validate_message(message: str) -> str:

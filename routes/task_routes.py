@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.database import SessionLocal, ScheduledTask, TaskRun
+from core.database import SessionLocal, ScheduledTask, TaskRun, Project
 from core.constants import internal_api_base
 from src.auth_helpers import get_current_user
 from src.constants import DATA_DIR, EMAIL_URGENCY_CACHE_DIR
@@ -157,6 +157,7 @@ class TaskCreate(BaseModel):
     then_task_id: Optional[str] = None            # chain: run this task after success
     notifications_enabled: Optional[bool] = None  # None lets action-specific defaults apply
     character_id: Optional[str] = None             # built-in persona id (PERSONAS) — biases output voice
+    project_id: Optional[str] = None
 
 
 class TaskUpdate(BaseModel):
@@ -178,6 +179,29 @@ class TaskUpdate(BaseModel):
     then_task_id: Optional[str] = None
     notifications_enabled: Optional[bool] = None
     character_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+def _normalise_project_id(value: Optional[str]) -> Optional[str]:
+    value = value.strip() if isinstance(value, str) else ""
+    return value or None
+
+
+def _project_belongs_to_request(db, project_id: str, user: Optional[str]) -> bool:
+    """Match exact owners, with only the legacy anonymous-system alias."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return False
+    if user is None:
+        return project.owner in (None, "__system__")
+    return project.owner == user
+
+
+def _field_was_supplied(body: BaseModel, name: str) -> bool:
+    fields = getattr(body, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(body, "__fields_set__", set())
+    return name in fields
 
 
 def _display_task_name(t: ScheduledTask) -> str:
@@ -209,6 +233,7 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
         "status": t.status,
         "output_target": t.output_target,
         "session_id": t.session_id,
+        "project_id": getattr(t, "project_id", None),
         "crew_member_id": getattr(t, "crew_member_id", None),
         "character_id": getattr(t, "character_id", None),
         "model": t.model,
@@ -340,8 +365,10 @@ def setup_task_routes(task_scheduler) -> APIRouter:
 
     @router.get("")
     async def list_tasks(request: Request, status: Optional[str] = None,
-                         include_last_run: bool = False):
+                         include_last_run: bool = False,
+                         project_id: Optional[str] = None):
         user = _owner(request)
+        project_id = _normalise_project_id(project_id)
         if user:
             await task_scheduler.ensure_defaults(user)
         else:
@@ -363,6 +390,13 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             q = db.query(ScheduledTask)
             if user:
                 q = q.filter(ScheduledTask.owner == user)
+            if project_id:
+                if not _project_belongs_to_request(db, project_id, user):
+                    raise HTTPException(404, "Project not found")
+                q = q.filter(ScheduledTask.project_id == project_id)
+            else:
+                # The established task panel remains the unscoped view.
+                q = q.filter(ScheduledTask.project_id == None)  # noqa: E711
             if status:
                 q = q.filter(ScheduledTask.status == status)
             tasks = q.order_by(ScheduledTask.created_at.desc()).all()
@@ -510,6 +544,9 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         task_id = str(uuid.uuid4())
         db = SessionLocal()
         try:
+            project_id = _normalise_project_id(req.project_id)
+            if project_id and not _project_belongs_to_request(db, project_id, user):
+                raise HTTPException(404, "Project not found")
             then_task_id = _validate_then_task_id(db, req.then_task_id, user)
             notifications_enabled = (
                 False if req.task_type == "action" and req.notifications_enabled is None
@@ -544,6 +581,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 next_run=next_run,
                 status="active" if (req.trigger_type in ("event", "webhook") or next_run) else "completed",
                 output_target=req.output_target,
+                project_id=project_id,
                 model=req.model or None,
                 endpoint_url=req.endpoint_url or None,
                 then_task_id=then_task_id,
@@ -708,6 +746,11 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if req.character_id is not None:
                 # Empty string clears the persona; non-empty stores the id.
                 task.character_id = req.character_id or None
+            if _field_was_supplied(req, "project_id"):
+                project_id = _normalise_project_id(req.project_id)
+                if project_id and not _project_belongs_to_request(db, project_id, user):
+                    raise HTTPException(404, "Project not found")
+                task.project_id = project_id
             if req.cron_expression is not None:
                 if req.cron_expression:
                     try:

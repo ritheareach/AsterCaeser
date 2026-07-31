@@ -1,86 +1,109 @@
-// AI integration — Ask agent, copilot, go-to-reference.
-import uiModule from '../ui.js';
+/**
+ * Project-editor AI helpers.
+ *
+ * The chat bridge intentionally receives only a caller-provided selection
+ * together with its relative path and line range. It never reads the rest of
+ * an editor document or falls back to an unscoped chat endpoint.
+ */
+const API_ROOT = '/api/workspace';
 
-let _copilotEnabled = true;
-let _ghostText = '';
-let _ghostDecoration = null;
-let _completionTimeout = null;
-
-export function askAgent(selectedText, filePath, language) {
-  const chatInput = document.querySelector('#message');
-  if (!chatInput) return uiModule.showToast?.('Chat input not found');
-  const context = `**File:** \`${filePath}\`\`\`${language}\n${selectedText}\n\`\`\`\n\nAnalyze this code:`;
-  chatInput.value = context;
-  chatInput.dispatchEvent(new Event('input'));
-  chatInput.focus();
-  // Submit automatically if configured
-  const sendBtn = document.querySelector('#send-btn, #voice-send-btn');
-  if (sendBtn && !sendBtn.disabled) setTimeout(() => sendBtn.click(), 300);
+function editorEndpoint(context, suffix) {
+  return `${API_ROOT}/${encodeURIComponent(context.workspaceId)}`
+    + `/project/${encodeURIComponent(context.projectId)}/${suffix}`;
 }
 
-export function copilotEnabled() { return _copilotEnabled; }
-export function setCopilotEnabled(v) { _copilotEnabled = v; }
-
-export function triggerCompletion(textarea, before, after, lang) {
-  if (!_copilotEnabled) return;
-  if (_completionTimeout) clearTimeout(_completionTimeout);
-  _completionTimeout = setTimeout(async () => {
-    try {
-      const res = await fetch('/api/copilot/complete', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ before, after, language: lang }),
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.completion) {
-        _showGhost(textarea, data.completion);
-      }
-    } catch (e) { /* silently fail */ }
-  }, 500);
+function lineRange(startLine, endLine) {
+  return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
 }
 
-function _showGhost(textarea, text) {
-  _ghostText = text;
-  const start = textarea.selectionStart;
-  const before = textarea.value.substring(0, start);
-  const after = textarea.value.substring(start);
-  textarea.value = before + text + after;
-  textarea.setSelectionRange(start, start + text.length);
-  textarea.focus();
+/** Build the exact text sent to chat: location metadata and selected code only. */
+export function buildSelectionPrompt({ text, path, startLine, endLine }) {
+  const selectedText = String(text || '');
+  const relativePath = String(path || '');
+  if (!selectedText || !relativePath || !Number.isInteger(startLine) || !Number.isInteger(endLine)) return null;
+  return `Please review this selected code. Explain what it does, flag likely issues, and suggest the next safe improvement.\n\nFile: ${relativePath}\n${lineRange(startLine, endLine)}\n\n\`\`\`\n${selectedText}\n\`\`\``;
 }
 
-export function acceptGhost(textarea) {
-  if (!_ghostText) return false;
-  _ghostText = '';
+/**
+ * Hand off a bounded selection to the normal sessions/chat UI.
+ *
+ * `sessions.js` documents and owns the corresponding `aster:editor-ask-agent`
+ * bridge so the editor does not create sessions or send messages itself.
+ */
+export function askAgentAboutSelection(selection, { onAccepted = null, onError = null } = {}) {
+  const prompt = buildSelectionPrompt(selection || {});
+  if (!prompt || !selection?.projectId) return false;
+  document.dispatchEvent(new CustomEvent('aster:editor-ask-agent', {
+    detail: {
+      projectId: String(selection.projectId),
+      prompt,
+      // Function callbacks stay entirely in-page. They make the user-visible
+      // editor→chat transition explicit without expanding the project-scoped
+      // prompt sent to the server.
+      onAccepted,
+      onError,
+    },
+  }));
   return true;
 }
 
-export function dismissGhost(textarea) {
-  if (!_ghostText) return false;
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  if (start !== end) {
-    textarea.value = textarea.value.substring(0, start) + textarea.value.substring(end);
-    textarea.setSelectionRange(start, start);
+/**
+ * Ask the project-scoped completion contract whether a real completion service
+ * is available. A false/503 result is surfaced by the editor; no completion is
+ * invented locally.
+ */
+export async function requestInlineCompletion(context, body, { signal } = {}) {
+  if (!context?.workspaceId || !context?.projectId) {
+    return { available: false, reason: 'Open a project before requesting inline completion.' };
   }
-  _ghostText = '';
-  return true;
-}
-
-export async function goToReferences(word, projectId, callback) {
-  if (!word || !projectId) return;
+  let response;
   try {
-    const res = await fetch(`/api/workspace/${projectId}/files/grep`, {
-      method: 'POST', credentials: 'same-origin',
+    response = await fetch(editorEndpoint(context, 'completion'), {
+      method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: word, max_results: 50 }),
+      body: JSON.stringify(body),
+      signal,
     });
-    const data = await res.json();
-    if (callback) callback(data.results || []);
-  } catch (e) {
-    uiModule.showError?.(`Reference search failed: ${e.message}`);
+  } catch (error) {
+    if (error.name === 'AbortError') return { available: false, aborted: true };
+    return { available: false, reason: `Completion request failed: ${error.message}` };
   }
+  let payload = {};
+  try { payload = await response.json(); } catch (_) { /* The status is still meaningful. */ }
+  if (!response.ok || !payload.available) {
+    return {
+      available: false,
+      reason: payload.reason || payload.detail || `Inline completion is unavailable (${response.status}).`,
+      status: response.status,
+    };
+  }
+  return { available: true, completion: typeof payload.completion === 'string' ? payload.completion : '' };
 }
 
-export default { askAgent, triggerCompletion, acceptGhost, dismissGhost, goToReferences, copilotEnabled, setCopilotEnabled };
+// Compatibility exports for callers from the old textarea-based editor. They
+// intentionally do not resurrect the previous unscoped `/api/copilot` path.
+export const askAgent = askAgentAboutSelection;
+export function copilotEnabled() { return false; }
+export function setCopilotEnabled() {}
+export async function triggerCompletion() {
+  return { available: false, reason: 'Use the project-scoped completion action in the code editor.' };
+}
+export function acceptGhost() { return false; }
+export function dismissGhost() { return false; }
+export async function goToReferences() {
+  return [];
+}
+
+export default {
+  askAgent,
+  askAgentAboutSelection,
+  buildSelectionPrompt,
+  requestInlineCompletion,
+  triggerCompletion,
+  acceptGhost,
+  dismissGhost,
+  goToReferences,
+  copilotEnabled,
+  setCopilotEnabled,
+};

@@ -14,7 +14,14 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
-from .database import Session as DbSession, ChatMessage as DbChatMessage, Document as DbDocument, SessionLocal, utcnow_naive
+from .database import (
+    Session as DbSession,
+    ChatMessage as DbChatMessage,
+    Document as DbDocument,
+    Project,
+    SessionLocal,
+    utcnow_naive,
+)
 from .models import Session, ChatMessage
 from src.attachment_refs import persistable_message_content
 from src.upload_handler import reserve_message_upload_references
@@ -23,6 +30,22 @@ from src.upload_handler import reserve_message_upload_references
 from .models import set_session_manager_instance, get_session_manager_instance
 
 logger = logging.getLogger(__name__)
+
+
+def _project_matches_session_owner(project, owner: Optional[str]) -> bool:
+    """Return whether a project can be attached to this session owner.
+
+    Workspace routes historically wrote anonymous projects with owner
+    ``__system__`` while the session subsystem represents the same
+    single-user mode as ``None``.  Accept that one legacy spelling, but never
+    allow a missing identity to claim a named user's project.
+    """
+    if project is None:
+        return False
+    project_owner = getattr(project, "owner", None)
+    if owner is None:
+        return project_owner in (None, "__system__")
+    return project_owner == owner
 
 
 def _message_timestamp_iso(value: Optional[datetime]) -> Optional[str]:
@@ -136,6 +159,10 @@ class SessionManager:
             is_important=getattr(db_session, "is_important", False) or False,
         )
         session.message_count = getattr(db_session, "message_count", 0) or 0
+        # ``Session`` remains a deliberately small legacy data container. The
+        # optional attribute keeps project metadata in the in-memory cache
+        # without forcing callers that construct Session directly to change.
+        session.project_id = getattr(db_session, "project_id", None)
         return session
 
     def _db_to_session(self, db_session: DbSession, db) -> Optional[Session]:
@@ -195,6 +222,7 @@ class SessionManager:
         )
 
         session.message_count = getattr(db_session, 'message_count', len(history))
+        session.project_id = getattr(db_session, "project_id", None)
         return session
 
     # ------------------------------------------------------------------
@@ -445,6 +473,7 @@ class SessionManager:
             session.owner = getattr(db_session, "owner", None)
             session.is_important = getattr(db_session, "is_important", False) or False
             session.message_count = getattr(db_session, "message_count", session.message_count) or 0
+            session.project_id = getattr(db_session, "project_id", None)
             return True
         except Exception as e:
             logger.error(f"Error syncing session metadata {session_id}: {e}")
@@ -500,11 +529,17 @@ class SessionManager:
         endpoint_url: str,
         model: str,
         rag: bool = False,
-        owner: str = None
+        owner: str = None,
+        project_id: Optional[str] = None,
     ) -> Session:
         """Create a new session and save to database."""
         db = SessionLocal()
         try:
+            project_id = project_id.strip() if isinstance(project_id, str) else None
+            if project_id:
+                project = db.query(Project).filter(Project.id == project_id).first()
+                if not _project_matches_session_owner(project, owner):
+                    raise ValueError("Project not found for session owner")
             db_session = DbSession(
                 id=session_id,
                 name=name,
@@ -513,6 +548,7 @@ class SessionManager:
                 rag=rag,
                 headers={},
                 owner=owner,
+                project_id=project_id,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc)
             )
@@ -528,6 +564,7 @@ class SessionManager:
                 headers={},
                 owner=owner,
             )
+            session.project_id = project_id
 
             self.sessions[session_id] = session
             return session

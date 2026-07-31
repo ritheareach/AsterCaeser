@@ -14,7 +14,7 @@ from src.constants import (
     UPLOAD_DIR,
 )
 from core.models import ChatMessage
-from src.chat_helpers import extract_urls, model_supports_vision
+from src.chat_helpers import extract_urls, model_supports_vision, model_supports_audio
 from src.document_processor import build_user_content, analyze_image_with_vl_result
 from src.youtube_handler import (
     is_youtube_url,
@@ -202,14 +202,18 @@ class ChatHandler:
         # so guide-only/no-tools turns must not reach it.
         vision_enabled = False
         main_is_vision = False
+        main_supports_audio = False
         if effective_att_ids:
             from src.settings import get_setting
             vision_enabled = get_setting("vision_enabled", True)
             if vision_enabled:
+                model_name = sess.model or ""
+                endpoint_url = getattr(sess, "endpoint_url", "") or ""
                 main_is_vision = await asyncio.to_thread(
-                    model_supports_vision,
-                    sess.model or "",
-                    getattr(sess, "endpoint_url", "") or "",
+                    model_supports_vision, model_name, endpoint_url,
+                )
+                main_supports_audio = await asyncio.to_thread(
+                    model_supports_audio, model_name, endpoint_url,
                 )
 
         if effective_att_ids and vision_enabled:
@@ -289,19 +293,28 @@ class ChatHandler:
             resolved_uploads=files_by_id,
         )
 
-        # Strip image_url entries for text-only models (VL description is already in the text)
-        if not vision_enabled and isinstance(user_content, list):
-            text_parts = [
-                item.get("text", "") for item in user_content
-                if isinstance(item, dict) and item.get("type") == "text"
-            ]
-            user_content = "\n".join(text_parts).strip() if text_parts else enhanced_message
-        elif not main_is_vision and isinstance(user_content, list):
-            text_parts = [
-                item.get("text", "") for item in user_content
-                if isinstance(item, dict) and item.get("type") == "text"
-            ]
-            user_content = "\n".join(text_parts).strip() if text_parts else enhanced_message
+        # Filter user_content per-modality: keep only content types the model
+        # can handle natively. When vision is off, strip everything non-text.
+        if isinstance(user_content, list):
+            filtered = []
+            for item in user_content:
+                if not isinstance(item, dict):
+                    filtered.append(item)
+                    continue
+                if item.get("type") == "text":
+                    filtered.append(item)
+                elif item.get("type") == "image_url":
+                    if vision_enabled and main_is_vision:
+                        filtered.append(item)
+                elif item.get("type") == "audio":
+                    if vision_enabled and main_supports_audio:
+                        filtered.append(item)
+            if len(filtered) == 1 and filtered[0].get("type") == "text":
+                user_content = filtered[0].get("text", enhanced_message)
+            elif not filtered:
+                user_content = enhanced_message
+            else:
+                user_content = filtered
 
         # Extract text portion for naming / context
         if isinstance(user_content, list):

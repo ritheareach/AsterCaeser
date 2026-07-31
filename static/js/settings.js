@@ -836,12 +836,18 @@ async function initVisionSettings() {
   try {
     _visionEndpoints = await _fetchModelEndpoints();
   } catch (e) { console.warn('Failed to load endpoints for vision fallback', e); }
+  var imageCapableTextarea = el('set-imageCapableModels');
   try {
     const settingsRes = await fetch('/api/auth/settings', { credentials: 'same-origin' });
     const settings = await settingsRes.json();
     if (settings.vision_model) vlSel.value = settings.vision_model;
     _syncModelLogo(vlSel);
     if (enabledToggle) enabledToggle.checked = settings.vision_enabled !== false;
+    if (imageCapableTextarea) {
+      imageCapableTextarea.value = Array.isArray(settings.image_capable_models)
+        ? settings.image_capable_models.join('\n')
+        : '';
+    }
     visionFallbackWidget = _bindFallbackWidget({
       containerId: 'set-visionFallbacks',
       addBtnId: 'set-visionAddFallback',
@@ -866,13 +872,19 @@ async function initVisionSettings() {
 
   async function saveSettings() {
     try {
+      var body = { vision_enabled: enabledToggle ? enabledToggle.checked : true, vision_model: vlSel.value };
+      if (imageCapableTextarea) {
+        var models = imageCapableTextarea.value.split(/[\n,]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+        body.image_capable_models = models;
+      }
       await fetch('/api/auth/settings', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vision_enabled: enabledToggle ? enabledToggle.checked : true, vision_model: vlSel.value }) });
-      msg.textContent = 'Saved'; msg.style.color = 'var(--fg)'; setTimeout(() => { msg.textContent = ''; }, 2000);
+        body: JSON.stringify(body) });
+      msg.textContent = 'Saved'; msg.style.color = 'var(--fg)'; setTimeout(function() { msg.textContent = ''; }, 2000);
     } catch (e) { msg.textContent = 'Failed to save'; msg.style.color = 'var(--red)'; }
   }
   vlSel.addEventListener('change', saveSettings);
   if (enabledToggle) enabledToggle.addEventListener('change', function() { syncVisionDisabled(); saveSettings(); });
+  if (imageCapableTextarea) imageCapableTextarea.addEventListener('input', saveSettings);
 
   _registerAiEndpointRefresh(function(endpoints) {
     _visionEndpoints = endpoints;

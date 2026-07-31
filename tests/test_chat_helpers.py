@@ -564,3 +564,17 @@ async def test_build_chat_context_keeps_cookie_user_owner_scope(monkeypatch):
         "preface_owner": "bob",
         "compact_owner": "bob",
     }
+
+
+@pytest.mark.asyncio
+async def test_build_chat_context_injects_selected_project_metadata(monkeypatch):
+    monkeypatch.setattr(chat_helpers, "_project_chat_context", lambda sess, owner: {
+        "role": "system", "content": "Selected project context: Name: Atlas"
+    })
+
+    ctx, _ = await _build_context_owner_probe(
+        monkeypatch,
+        {"api_token": False, "current_user": "alice"},
+    )
+
+    assert ctx.preface[0] == {"role": "system", "content": "Selected project context: Name: Atlas"}

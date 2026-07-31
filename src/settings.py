@@ -44,6 +44,11 @@ DEFAULT_SETTINGS = {
     "vision_enabled": True,
     # Ordered fallback chain for the Vision model (image analysis, OCR, tagging).
     "vision_model_fallbacks": [],
+    # Manually listed model names that support image input natively. When a chat
+    # model appears here, images are sent to it directly instead of routing through
+    # the separate VL fallback model. Useful for models the automatic probes can't
+    # detect (custom names, remote endpoints, etc.).
+    "image_capable_models": [],
     # Public base URL used to build clickable deep-links in outgoing alerts
     # (e.g., urgency alert email). Example: "https://chat.example.com"
     "app_public_url": "",
@@ -267,7 +272,7 @@ def is_setting_overridden(key: str) -> bool:
 # model + image-generation model. The owner argument is the authed username
 # resolved by FastAPI deps; an empty/None owner falls through to the global.
 _PER_USER_KEYS = {
-    "vision_model", "vision_enabled", "vision_model_fallbacks",
+    "vision_model", "vision_enabled", "vision_model_fallbacks", "image_capable_models",
     "image_model", "image_gen_enabled", "image_quality",
     # Default chat endpoint / model — without per-user resolution every new
     # account inherited whatever the most-recent admin picked, which then
