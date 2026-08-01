@@ -29,6 +29,22 @@ def _write_all(fd: int, data: bytes) -> None:
         data = data[written:]
 
 
+def _set_pty_size(master_fd: int, child_pid: int, cols: int, rows: int) -> None:
+    if not (20 <= cols <= 500 and 5 <= rows <= 200):
+        return
+    try:
+        import fcntl
+        import struct
+        import termios
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        try:
+            os.kill(child_pid, signal.SIGWINCH)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
 def run(shell: str, root: str) -> int:
     try:
         import pty
@@ -70,7 +86,22 @@ def run(shell: str, root: str) -> int:
                 if key.data == "input":
                     if not data:
                         return 0
-                    _write_all(master_fd, data)
+                    while b"\x1bAsterResize:" in data:
+                        prefix_idx = data.find(b"\x1bAsterResize:")
+                        newline_idx = data.find(b"\n", prefix_idx)
+                        if newline_idx != -1:
+                            cmd_bytes = data[prefix_idx:newline_idx]
+                            data = data[:prefix_idx] + data[newline_idx + 1:]
+                            try:
+                                parts = cmd_bytes.decode(errors="ignore").split(":")
+                                if len(parts) == 3:
+                                    _set_pty_size(master_fd, child.pid, int(parts[1]), int(parts[2]))
+                            except Exception:
+                                pass
+                        else:
+                            break
+                    if data:
+                        _write_all(master_fd, data)
                 elif data:
                     _write_all(sys.stdout.fileno(), data)
     finally:

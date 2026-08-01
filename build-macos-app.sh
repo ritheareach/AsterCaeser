@@ -87,7 +87,7 @@ die_gui() {
 [ -x "$UVICORN" ] || die_gui "AsterCaeser isn't set up yet. Open Terminal and run:
 
 cd $INSTALL_DIR
-python3.11 -m venv venv
+python3.12 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ./venv/bin/python setup.py"
 

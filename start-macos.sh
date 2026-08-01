@@ -72,9 +72,9 @@ fi
 #    (or non-mac) we just use whatever Python 3.11+ is on PATH.
 PY=""
 if [ "$(uname -m)" = "arm64" ]; then
-    cands="/opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11"
+    cands="/opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.11 /usr/local/bin/python3.12 /usr/local/bin/python3.11 python3.12"
 else
-    cands="python3.13 python3.12 python3.11 python3"
+    cands="python3.12 python3.13 python3.11 python3"
 fi
 for cand in $cands; do
     p="$(command -v "$cand" 2>/dev/null)" || continue
@@ -88,7 +88,7 @@ done
 #    - tmux      : Cookbook runs model downloads/serves in the background
 #    - llama.cpp : a prebuilt, Metal-enabled llama-server so Cookbook can serve
 #                  GGUF models on the GPU with no compile step
-#    - python@3.11 : installed only if no suitable (arm64) Python was found above
+#    - python@3.12 : installed only if no suitable Python was found above
 #
 # tmux and llama.cpp are needed only by Cookbook (local model serving), not to
 # boot the core app. So if Homebrew can't install one right now we warn and keep
@@ -113,17 +113,17 @@ echo "▶ Checking dependencies (Homebrew)…"
 if [ -n "$PY" ]; then
     echo "  (using $("$PY" --version 2>&1) at $PY)"
 else
-    echo "  installing python@3.11…"
-    brew install python@3.11 || true
-    PY="$(command -v /opt/homebrew/bin/python3.11 || command -v python3.11 || true)"
+    echo "  installing python@3.12…"
+    brew install python@3.12 || true
+    PY="$(command -v /opt/homebrew/bin/python3.12 || command -v /usr/local/bin/python3.12 || command -v python3.12 || true)"
 fi
 brew_ensure tmux tmux
 brew_ensure llama-server llama.cpp
 brew_ensure apfel apfel
 
 if [ -z "$PY" ] || [ ! -x "$PY" ]; then
-    echo "✗ Couldn't find a Python 3.11+ to build the environment with."
-    echo "  Check: ls /opt/homebrew/bin/python3*  (or install one: brew install python@3.11)"
+    echo "✗ Couldn't find a Python 3.12+ to build the environment with."
+    echo "  Check: ls /opt/homebrew/bin/python3*  (or install one: brew install python@3.12)"
     exit 1
 fi
 

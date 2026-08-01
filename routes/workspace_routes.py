@@ -457,12 +457,11 @@ def _completion_context_is_bounded(body: CompletionRequest) -> None:
 
 
 def _resize_terminal(process, cols, rows) -> bool:
-    """Best-effort Unix PTY resize; pipe-backed terminals remain unchanged.
+    """Best-effort Unix PTY resize; pipe-backed terminals receive stdin resize control.
 
     Some deployments wrap the child streams in a PTY and expose its master fd
-    as ``_pty_master_fd``.  The current portable pipe transport has no such fd,
-    so resize must be silent there rather than treating client metadata as an
-    error or attempting an unbounded ioctl.
+    as ``_pty_master_fd``.  On macOS where terminal_bridge.py is used,
+    resize control commands are sent via stdin control sequences.
     """
     if isinstance(cols, bool) or isinstance(rows, bool):
         return False
@@ -470,17 +469,32 @@ def _resize_terminal(process, cols, rows) -> bool:
         return False
     if not 20 <= cols <= 500 or not 5 <= rows <= 200:
         return False
+
     fd = getattr(process, "_pty_master_fd", None)
-    if not isinstance(fd, int):
-        return False
-    try:
-        import fcntl
-        import struct
-        import termios
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        return True
-    except (ImportError, OSError, ValueError):
-        return False
+    if isinstance(fd, int):
+        try:
+            import fcntl
+            import struct
+            import termios
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            if hasattr(process, "pid") and process.pid:
+                try:
+                    import signal
+                    os.kill(process.pid, signal.SIGWINCH)
+                except OSError:
+                    pass
+            return True
+        except (ImportError, OSError, ValueError):
+            return False
+
+    if process and getattr(process, "stdin", None) and not process.stdin.is_closing():
+        try:
+            process.stdin.write(f"\x1bAsterResize:{cols}:{rows}\n".encode())
+            return True
+        except Exception:
+            return False
+
+    return False
 
 
 async def _start_terminal_process(shell: str, root: str):
@@ -1229,6 +1243,7 @@ def setup_workspace_routes():
             }
             active_sessions[session_id] = session
             asyncio.create_task(run_session_reader(session_id))
+            _resize_terminal(session["process"], session["cols"], session["rows"])
         else:
             session["ws"] = websocket
             if session["output_history"]:
@@ -1249,24 +1264,30 @@ def setup_workspace_routes():
                 if message.get("bytes") is not None:
                     await _terminal_write(session["process"], message["bytes"])
                 elif message.get("text"):
-                    payload = json.loads(message["text"])
-                    if payload.get("type") == "input" and isinstance(payload.get("data"), str):
-                        await _terminal_write(session["process"], payload["data"].encode())
-                    elif payload.get("type") == "resize":
-                        session["cols"] = payload.get("cols", session["cols"])
-                        session["rows"] = payload.get("rows", session["rows"])
-                        _resize_terminal(session["process"], session["cols"], session["rows"])
-                    elif payload.get("type") == "kill":
-                        process = session["process"]
-                        if session_id in active_sessions:
-                            del active_sessions[session_id]
-                        if process.stdin:
-                            try: process.stdin.close()
-                            except Exception: pass
-                        _close_terminal_pty(process)
-                        if process.returncode is None:
-                            process.terminate()
-                        break
+                    try:
+                        payload = json.loads(message["text"])
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        payload = None
+                    if isinstance(payload, dict):
+                        if payload.get("type") == "input" and isinstance(payload.get("data"), str):
+                            await _terminal_write(session["process"], payload["data"].encode())
+                        elif payload.get("type") == "resize":
+                            session["cols"] = payload.get("cols", session["cols"])
+                            session["rows"] = payload.get("rows", session["rows"])
+                            _resize_terminal(session["process"], session["cols"], session["rows"])
+                        elif payload.get("type") == "kill":
+                            process = session["process"]
+                            if session_id in active_sessions:
+                                del active_sessions[session_id]
+                            if process.stdin:
+                                try: process.stdin.close()
+                                except Exception: pass
+                            _close_terminal_pty(process)
+                            if process.returncode is None:
+                                process.terminate()
+                            break
+                    elif isinstance(message["text"], str):
+                        await _terminal_write(session["process"], message["text"].encode())
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:

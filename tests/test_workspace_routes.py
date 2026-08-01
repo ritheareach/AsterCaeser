@@ -439,3 +439,26 @@ def test_terminal_shell_selection(monkeypatch):
     shell = shutil.which("fish") or os.environ.get("SHELL") or "/bin/bash"
     assert shell == "/bin/bash"
 
+
+def test_terminal_pipe_bridge_resize():
+    class DummyPipe:
+        def __init__(self):
+            self.written = b""
+            self.closed = False
+        def is_closing(self):
+            return self.closed
+        def write(self, data):
+            self.written += data
+
+    dummy_stdin = DummyPipe()
+    process = SimpleNamespace(stdin=dummy_stdin)
+
+    # Valid resize emits escape sequence to stdin
+    assert wr._resize_terminal(process, 120, 40) is True
+    assert dummy_stdin.written == b"\x1bAsterResize:120:40\n"
+
+    # Out of bounds dimensions reject resize
+    assert wr._resize_terminal(process, 2, 40) is False
+    assert wr._resize_terminal(process, 120, 999) is False
+
+
