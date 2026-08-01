@@ -76,7 +76,7 @@
       }
       // Apply font early
       if (t && t.font) {
-        var fm = {mono:"'Fira Code', monospace",sans:"system-ui, -apple-system, 'Segoe UI', sans-serif",serif:"Georgia, 'Times New Roman', serif",opendyslexic:"'OpenDyslexic', sans-serif"};
+        var fm = {mono:"'Fira Code', monospace",fira:"'Fira Code', monospace",sans:"system-ui, -apple-system, 'Segoe UI', sans-serif",serif:"Georgia, 'Times New Roman', serif",opendyslexic:"'OpenDyslexic', sans-serif"};
         if (fm[t.font]) { s.setProperty('--font-family', fm[t.font]); }
         else { s.setProperty('--font-family', "'" + t.font.replace(/'/g,'') + "', sans-serif"); }
       }
@@ -585,6 +585,7 @@
             <label class="theme-fd-label">Font</label>
             <select id="theme-font-select" class="theme-fd-select" aria-label="Font">
               <option value="mono">Monospace</option>
+              <option value="fira">Fira Code</option>
               <option value="sans">Sans-serif</option>
               <option value="serif">Serif</option>
               <option value="opendyslexic">OpenDyslexic (dyslexia-friendly)</option>
@@ -898,7 +899,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;">
             <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M9 7h6M9 11h4"/>
           </svg>
-          <span class="grow">Library</span>
+          <span class="grow">Documents</span>
           <button type="button" class="list-item-plus-btn" id="library-new-doc-btn" title="New document">
             <svg class="list-item-plus-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:11px;height:11px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             <span class="list-item-plus-label">document</span>
@@ -939,6 +940,14 @@
             <circle cx="9" cy="15" r="1.5" fill="currentColor"/>
           </svg>
           <span class="grow">Theme</span>
+        </div>
+      </div>
+      <div class="section" id="code-editor-section">
+        <div class="list-item" id="tool-code-editor-btn" title="Open the project code editor">
+          <svg class="section-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/>
+          </svg>
+          <span class="grow">Code editor</span>
         </div>
       </div>
     </div>
@@ -1048,6 +1057,9 @@
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
               </button>
             </div>
+            <select id="model-picker-connector-filter" class="model-picker-connector-filter" aria-label="Filter models by connector">
+              <option value="">All connectors</option>
+            </select>
             <div class="model-picker-list" id="model-picker-list"></div>
           </div>
         </div>
@@ -2214,6 +2226,7 @@
                   <option value="https://api.openai.com/v1" data-logo="openai">OpenAI</option>
                   <option value="copilot" data-logo="github" data-auth-flow="copilot">GitHub Copilot</option>
                   <option value="chatgpt-subscription" data-logo="openai" data-auth-flow="chatgpt-subscription">ChatGPT Subscription</option>
+                  <option value="antigravity-subscription" data-logo="gemini" data-auth-flow="antigravity-subscription">Antigravity Subscription</option>
                   <option value="https://openrouter.ai/api/v1" data-logo="openrouter">OpenRouter</option>
                   <option value="https://ollama.com/api" data-logo="ollama">Ollama Cloud</option>
                   <option value="https://api.groq.com/openai/v1" data-logo="groq">Groq</option>

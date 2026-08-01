@@ -31,9 +31,16 @@ if [ -f .env ]; then
 fi
 
 # Shell overrides (ASTERCAESER_PORT / ASTERCAESER_HOST) take top priority, then .env
-# values (APP_PORT / APP_BIND), then built-in defaults.
+# values (APP_PORT / APP_BIND), then built-in defaults. When Tailscale is
+# available, bind directly to its IPv4 address so the app is reachable from
+# the tailnet without exposing it to the whole LAN.
 PORT="${ASTERCAESER_PORT:-${APP_PORT:-7860}}"   # 7860, not 7000 — macOS AirPlay Receiver holds 7000.
-HOST="${ASTERCAESER_HOST:-${APP_BIND:-127.0.0.1}}" # Set APP_BIND=0.0.0.0 in .env for LAN/Tailscale access.
+TAILSCALE_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+DEFAULT_HOST="${TAILSCALE_IP:-127.0.0.1}"
+HOST="${ASTERCAESER_HOST:-${APP_BIND:-$DEFAULT_HOST}}"
+# Keep the login requirement on for remote access. Set
+# ASTERCAESER_AUTH_ENABLED=false only for an intentionally private local run.
+export AUTH_ENABLED="${ASTERCAESER_AUTH_ENABLED:-true}"
 PROBE_HOST="$HOST"
 if [ "$PROBE_HOST" = "0.0.0.0" ] || [ "$PROBE_HOST" = "::" ]; then
     PROBE_HOST="127.0.0.1"
@@ -212,19 +219,16 @@ else
     echo "▶ ChromaDB CLI not found in venv; skipping (tool index will be degraded)."
 fi
 
-# 5. Launch. Bind to loopback by default; opt into LAN/Tailscale with
-#    ASTERCAESER_HOST=0.0.0.0.
+# 5. Launch. The host is the Tailscale address when available, otherwise
+#    loopback. Override with ASTERCAESER_HOST if a different bind is needed.
 URL_HOST="$HOST"
 if [ "$URL_HOST" = "0.0.0.0" ] || [ "$URL_HOST" = "::" ]; then
     URL_HOST="127.0.0.1"
 fi
 URL="http://$URL_HOST:$PORT"
 TAILSCALE_URL=""
-if [ "$HOST" = "0.0.0.0" ] && command -v tailscale >/dev/null 2>&1; then
-    TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
-    if [ -n "$TS_IP" ]; then
-        TAILSCALE_URL="http://$TS_IP:$PORT"
-    fi
+if [ -n "$TAILSCALE_IP" ]; then
+    TAILSCALE_URL="http://$TAILSCALE_IP:$PORT"
 fi
 
 # Open the browser automatically once the server is accepting connections — so

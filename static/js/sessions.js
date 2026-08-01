@@ -98,6 +98,12 @@ function _stripUserVisionBlocks(text) {
   ).trim();
 }
 
+function _stripEditorWebviewContext(text) {
+  return String(text || '')
+    .replace(/\n*\[ASTERCAESER_WEBVIEW_CONTEXT\][\s\S]*?\[\/ASTERCAESER_WEBVIEW_CONTEXT\]\s*/g, '')
+    .trim();
+}
+
 function _historyPageLimit() {
   return window.innerWidth <= 768 ? HISTORY_PAGE_LIMIT_MOBILE : HISTORY_PAGE_LIMIT_DESKTOP;
 }
@@ -144,6 +150,7 @@ function _renderHistoryMessage(msg, modelName) {
   }
   if (msg.role === 'user') {
     displayContent = _stripUserVisionBlocks(displayContent);
+    displayContent = _stripEditorWebviewContext(displayContent);
     const trimmed = displayContent.trim();
     if (
       trimmed === 'Continue where you left off' ||
@@ -1372,6 +1379,7 @@ function _postRenderSessionList(list) {
   _initSwipeToDelete(list);
   initDragSort();
   _showSwipeHint(list);
+  document.dispatchEvent(new CustomEvent('aster:sessions-updated'));
 }
 
 function _initKeyboardNav(list) {
@@ -1789,6 +1797,7 @@ export async function selectSession(id, { keepSidebar = false, showLoading = tru
       try { window.documentModule.clearSelection(); } catch {}
     }
     currentSessionId = id;
+    document.dispatchEvent(new CustomEvent('session-switched', { detail: { sessionId: id } }));
     // Identify Assistant / task-output sessions so we don't "trap" the user
     // there on return. Skipped from both `lastSessionId` persistence and the
     // URL hash — the user complained that coming back to AsterCaeser kept

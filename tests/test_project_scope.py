@@ -50,7 +50,7 @@ def scoped_db(monkeypatch):
 
 def _route(router, method, path):
     return next(
-        route.endpoint for route in router.routes
+        route.endpoint for route in reversed(router.routes)
         if route.path == path and method in route.methods
     )
 

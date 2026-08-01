@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -140,6 +141,12 @@ async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -
 
     else:
         return CallToolResult(content=[TextContent(type="text", text=f"Error: Unknown action '{action}'. Use: list, add_directory, remove_directory")])
+
+
+async def call_tool(name: str, arguments: Optional[dict] = None) -> CallToolResult:
+    """Compatibility wrapper for local callers outside the MCP transport."""
+    result = await _call_tool(None, CallToolRequestParams(name=name, arguments=arguments or {}))
+    return result.content if hasattr(result, "content") else result
 
 
 server = Server("rag", on_list_tools=_list_tools, on_call_tool=_call_tool)

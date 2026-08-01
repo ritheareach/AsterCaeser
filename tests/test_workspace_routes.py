@@ -262,9 +262,10 @@ def test_symbol_search_is_project_confined_and_classifies_results(project):
     assert error.value.status_code == 404
 
 
-def test_completion_reports_authenticated_unavailability_with_bounded_context(project):
+@pytest.mark.asyncio
+async def test_completion_reports_authenticated_unavailability_with_bounded_context(project):
     completion = _endpoint("/api/workspace/{wid}/project/{pid}/completion", "POST")
-    response = completion(
+    response = await completion(
         object(), project.wid, project.pid,
         wr.CompletionRequest(prefix="pri", current_file_context="print('hello')"),
     )
@@ -276,13 +277,13 @@ def test_completion_reports_authenticated_unavailability_with_bounded_context(pr
     with pytest.raises(ValidationError):
         wr.CompletionRequest(path="/host/path-is-not-accepted")
     with pytest.raises(HTTPException) as error:
-        completion(
+        await completion(
             object(), project.wid, project.pid,
             wr.CompletionRequest(current_file_context="x" * (wr._MAX_COMPLETION_FILE_CONTEXT_CHARS + 1)),
         )
     assert error.value.status_code == 413
     with pytest.raises(HTTPException) as error:
-        completion(object(), project.other_wid, project.pid, wr.CompletionRequest())
+        await completion(object(), project.other_wid, project.pid, wr.CompletionRequest())
     assert error.value.status_code == 404
 
 
@@ -460,5 +461,4 @@ def test_terminal_pipe_bridge_resize():
     # Out of bounds dimensions reject resize
     assert wr._resize_terminal(process, 2, 40) is False
     assert wr._resize_terminal(process, 120, 999) is False
-
 

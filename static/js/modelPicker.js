@@ -178,6 +178,7 @@ function _initModelPickerDropdown() {
   const menu = document.getElementById('model-picker-menu');
   const search = document.getElementById('model-picker-search');
   const listEl = document.getElementById('model-picker-list');
+  const connectorFilter = document.getElementById('model-picker-connector-filter');
   const searchRow = menu ? menu.querySelector('.model-picker-search-row') : null;
   const refreshBtn = document.getElementById('model-picker-refresh-btn');
   if (!wrap || !btn || !menu || !search || !listEl) return;
@@ -340,15 +341,35 @@ function _initModelPickerDropdown() {
   const _collapsedProviders = new Set(_loadList('astercaeser-model-collapsed'));
   let _justExpandedProvider = null;
 
-  function _populate(filter) {
+  function _populate(filter, connector = connectorFilter ? connectorFilter.value : '') {
     listEl.innerHTML = '';
     const all = _getAllModels();
+    if (connectorFilter) {
+      const connectors = new Map();
+      all.forEach(m => {
+        const key = m.endpointId || m.url || m.epName || '';
+        if (key && !connectors.has(key)) connectors.set(key, m.epName || m.url || key);
+      });
+      const current = connectorFilter.value;
+      connectorFilter.innerHTML = '<option value="">All connectors</option>';
+      [...connectors.entries()]
+        .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+        .forEach(([key, label]) => {
+          const option = document.createElement('option');
+          option.value = key;
+          option.textContent = label;
+          connectorFilter.appendChild(option);
+        });
+      connectorFilter.value = connectors.has(current) ? current : (connectors.has(connector) ? connector : '');
+      connector = connectorFilter.value;
+    }
+    const visible = connector ? all.filter(m => (m.endpointId || m.url || m.epName || '') === connector) : all;
     const q = (filter || '').trim().toLowerCase();
-    const hasAnyModel = all.length > 0;
+    const hasAnyModel = visible.length > 0;
     listEl.classList.toggle('is-empty', !hasAnyModel);
     menu.classList.toggle('no-models', !hasAnyModel);
     if (search) {
-      search.placeholder = hasAnyModel ? 'Search models…' : 'No models connected';
+      search.placeholder = all.length === 0 ? 'No models connected' : (hasAnyModel ? 'Search models…' : 'No models for this connector');
     }
     if (searchRow) {
       searchRow.classList.toggle('searching', !!q);
@@ -359,7 +380,7 @@ function _initModelPickerDropdown() {
     // Unique lookup so Recent/Favorites (stored as bare model IDs) can be
     // resolved back to full model objects; drops anything no longer offered.
     const byId = new Map();
-    all.forEach(m => { if (!byId.has(m.mid)) byId.set(m.mid, m); });
+    visible.forEach(m => { if (!byId.has(m.mid)) byId.set(m.mid, m); });
 
     const favs = _loadFavorites();
 
@@ -450,7 +471,7 @@ function _initModelPickerDropdown() {
 
     // ── Search mode: flat, filtered results across the whole catalog ──
     if (q) {
-      const matches = all.filter(m => {
+      const matches = visible.filter(m => {
         const provName = _providerDisplayName(_providerSlug(m.mid)).toLowerCase();
         return [m.mid, m.display, m.epName, m.providerText, provName]
           .filter(Boolean).join(' ').toLowerCase().includes(q);
@@ -478,7 +499,7 @@ function _initModelPickerDropdown() {
     // Recent: only render when the catalog is big enough that surfacing
     // a recency shortlist is actually useful, AND only models that
     // aren't already in Favorites (dedupe).
-    if (all.length > BROWSE_ALL_LIMIT) {
+    if (visible.length > BROWSE_ALL_LIMIT) {
       const recentModels = _loadRecent()
         .map(id => byId.get(id))
         .filter(Boolean)
@@ -491,15 +512,15 @@ function _initModelPickerDropdown() {
     }
 
     // Small catalogs: still list everything so users aren't forced to search.
-    if (all.length <= BROWSE_ALL_LIMIT) {
-      const rest = all.filter(m => !shown.has(m.mid));
+    if (visible.length <= BROWSE_ALL_LIMIT) {
+      const rest = visible.filter(m => !shown.has(m.mid));
       if (rest.length) {
         if (shown.size) _addSection('All models');
         rest.forEach(_addRow);
       }
     } else {
       // Large catalog: show provider groups with collapsible sections.
-      const rest = all.filter(m => !shown.has(m.mid));
+      const rest = visible.filter(m => !shown.has(m.mid));
       const groups = new Map();
       rest.forEach(m => {
         const slug = _providerSlug(m.mid);
@@ -673,6 +694,10 @@ function _initModelPickerDropdown() {
 
   search.addEventListener('input', () => _populate(search.value));
   search.addEventListener('click', (e) => e.stopPropagation());
+  if (connectorFilter) {
+    connectorFilter.addEventListener('change', () => _populate(search.value, connectorFilter.value));
+    connectorFilter.addEventListener('click', (e) => e.stopPropagation());
+  }
   if (refreshBtn) {
     refreshBtn.addEventListener('click', async (e) => {
       e.stopPropagation();

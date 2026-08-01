@@ -17,6 +17,14 @@ export const PROVIDER_DEVICE_FLOWS = {
       return start?.verification_uri || '';
     },
   },
+  'antigravity-subscription': {
+    label: 'Antigravity Subscription',
+    startUrl: '/api/antigravity-subscription/device/start',
+    pollUrl: '/api/antigravity-subscription/device/poll',
+    authUrl(start) {
+      return start?.verification_uri || '';
+    },
+  },
 };
 
 function _formData() {

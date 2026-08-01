@@ -42,6 +42,7 @@ _MAX_GREP_FILES = 1_000
 _MAX_GREP_RESULTS = 500
 _MAX_TEXT_FILE_BYTES = 1_000_000
 _MAX_WRITE_BYTES = 1_000_000
+_MAX_WEBVIEW_BRIDGE_FILES = 500
 _MAX_NAME_LENGTH = 120
 _MAX_DESCRIPTION_LENGTH = 10_000
 _MAX_SYMBOL_FILES = 1_000
@@ -94,6 +95,8 @@ class FileRead(BaseModel):
 class FileWrite(BaseModel):
     path: str
     content: str
+    expected_version: Optional[str] = None
+    force: bool = False
 
 
 class FileCreate(BaseModel):
@@ -802,7 +805,7 @@ def setup_workspace_routes():
                 for entry in scanned:
                     if len(entries) >= _MAX_LIST_ENTRIES:
                         break
-                    if entry.name in {".git", "node_modules", "__pycache__"} or entry.is_symlink():
+                    if entry.name in {".git", "node_modules", "__pycache__", ".astercaeser"} or entry.is_symlink():
                         continue
                     try:
                         is_dir = entry.is_dir(follow_symlinks=False)
@@ -822,6 +825,57 @@ def setup_workspace_routes():
             raise HTTPException(403, "Permission denied")
         entries.sort(key=lambda item: (item["type"] != "dir", item["name"].lower()))
         return {"entries": entries, "path": body.path.strip(), "truncated": len(entries) >= _MAX_LIST_ENTRIES}
+
+    @router.post("/{wid}/project/{pid}/webview-bridge/provision")
+    def provision_webview_bridge(request: Request, wid: str, pid: str):
+        """Install the opt-in webview bridge in this project only.
+
+        The bridge exposes rendered page text to the active AsterCaeser frame;
+        it does not grant filesystem, cookie, or storage access.  Provisioning
+        is idempotent and only touches HTML templates containing ``</head>``.
+        """
+        root, _ = _project_file(request, wid, pid, "", allow_root=True)
+        hidden = os.path.join(root, ".astercaeser")
+        try:
+            os.makedirs(hidden, mode=0o700, exist_ok=True)
+            marker = os.path.join(hidden, "webview-bridge.json")
+            bridge_src = f"{request.url.scheme}://{request.url.netloc}/static/js/editor/webview-bridge.js"
+            tag = f'<script src="{bridge_src}" data-astercaeser-webview-bridge="1"></script>'
+            touched = []
+            scanned = 0
+            for current, dirs, files in os.walk(root):
+                dirs[:] = [name for name in dirs if name not in {".git", ".astercaeser", "node_modules", "__pycache__"}]
+                for name in files:
+                    if scanned >= _MAX_WEBVIEW_BRIDGE_FILES:
+                        break
+                    if not name.lower().endswith((".html", ".htm", ".jinja", ".jinja2")):
+                        continue
+                    path = os.path.join(current, name)
+                    scanned += 1
+                    try:
+                        content = Path(path).read_text(encoding="utf-8-sig")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    if "data-astercaeser-webview-bridge" in content or "</head>" not in content.lower():
+                        continue
+                    head_end = content.lower().find("</head>")
+                    updated = content[:head_end] + "    " + tag + "\n" + content[head_end:]
+                    try:
+                        Path(path).write_text(updated, encoding="utf-8")
+                    except OSError:
+                        continue
+                    touched.append(os.path.relpath(path, root))
+                if scanned >= _MAX_WEBVIEW_BRIDGE_FILES:
+                    break
+            Path(marker).write_text(json.dumps({
+                "version": 1,
+                "bridge_url": bridge_src,
+                "files": touched,
+                "installed_at": datetime.now(timezone.utc).isoformat(),
+            }, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(500, f"Could not provision the webview bridge: {exc}")
+        return {"ok": True, "bridge_url": bridge_src, "files": touched, "marker": ".astercaeser/webview-bridge.json"}
 
     @router.post("/{wid}/project/{pid}/files/read")
     def read_file(request: Request, wid: str, pid: str, body: FileRead):
@@ -850,6 +904,17 @@ def setup_workspace_routes():
             raise HTTPException(409, "Parent directory does not exist")
         if os.path.exists(target) and not os.path.isfile(target):
             raise HTTPException(409, "Path is not a file")
+        if body.expected_version and not body.force and os.path.isfile(target):
+            stat = os.stat(target)
+            current_version = f"{stat.st_mtime_ns}:{stat.st_size}"
+            if current_version != body.expected_version:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "File changed on disk before it was saved.",
+                        "current_version": current_version,
+                    },
+                )
         try:
             with open(target, "x" if not os.path.exists(target) else "w", encoding="utf-8") as file:
                 file.write(body.content)
@@ -1012,7 +1077,7 @@ def setup_workspace_routes():
         return {"results": results, "total": len(results), "truncated": truncated}
 
     @router.post("/{wid}/project/{pid}/completion")
-    def completion_availability(request: Request, wid: str, pid: str, body: CompletionRequest):
+    async def completion_availability(request: Request, wid: str, pid: str, body: CompletionRequest):
         """AI Copilot code completion provider endpoint."""
         owner = _owner(request)
         _, db = _get_project_or_404(pid, owner, wid)
@@ -1046,7 +1111,7 @@ def setup_workspace_routes():
         except Exception:
             pass
 
-        # Fallback: enabled ModelEndpoints from DB
+        # Fallback 1: enabled ModelEndpoints from DB
         if not completion_text:
             try:
                 from core.database import ModelEndpoint
@@ -1077,6 +1142,40 @@ def setup_workspace_routes():
                                     break
                     except Exception:
                         continue
+            except Exception:
+                pass
+
+        # Fallback 2: Default configured system LLM endpoint
+        if not completion_text:
+            try:
+                from src.task_endpoint import resolve_task_endpoint
+                from src.endpoint_resolver import resolve_endpoint
+                from src.llm_core import llm_call_async
+
+                url, model, headers = resolve_task_endpoint(owner=owner or None)
+                if not url or not model:
+                    url, model, headers = resolve_endpoint("default", owner=owner or None)
+
+                if url and model:
+                    prompt = (
+                        f"Complete the code snippet at <CURSOR>. Output ONLY the exact code to insert at <CURSOR>. "
+                        f"No markdown fences, no explanations, no chat commentary.\n\n"
+                        f"Language: {lang}\n"
+                        f"Context:\n{prefix[-1200:]}<CURSOR>{suffix[:300]}"
+                    )
+                    messages = [
+                        {"role": "system", "content": "You are a code completion AI. Output only raw code to insert at <CURSOR>."},
+                        {"role": "user", "content": prompt}
+                    ]
+                    res_text = await llm_call_async(
+                        url, model, messages,
+                        temperature=0.1,
+                        max_tokens=120,
+                        headers=headers,
+                        timeout=8
+                    )
+                    if res_text:
+                        completion_text = res_text.replace("```" + lang, "").replace("```", "").strip("\r\n")
             except Exception:
                 pass
 

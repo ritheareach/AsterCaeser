@@ -24,6 +24,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import uuid
 from contextvars import ContextVar
+from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -2542,6 +2543,12 @@ async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -
         return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
     finally:
         _CURRENT_OWNER.reset(owner_token)
+
+
+async def call_tool(name: str, arguments: Optional[dict] = None) -> CallToolResult:
+    """Compatibility wrapper for local callers outside the MCP transport."""
+    result = await _call_tool(None, CallToolRequestParams(name=name, arguments=arguments or {}))
+    return result.content if hasattr(result, "content") else result
 
 
 server = Server("email", on_list_tools=_list_tools, on_call_tool=_call_tool)

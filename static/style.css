@@ -625,6 +625,17 @@ body.bg-pattern-sparkles {
     #tools-section .list-item {
       padding: 8px 8px;
     }
+    #code-editor-section {
+      margin-top: 1px;
+    }
+    #code-editor-section .list-item {
+      padding: 8px 8px;
+    }
+    #code-editor-section .section-icon {
+      width: 18px;
+      height: 18px;
+      left: -1px;
+    }
     .sidebar.right-side .sidebar-header {
       justify-content: flex-start;
       padding-left: 10px;
@@ -2967,6 +2978,22 @@ body.bg-pattern-sparkles {
       transition: border-color 0.15s, padding 0.18s ease, background 0.18s ease;
     }
     .model-picker-menu input[type="text"]:focus {
+      border-color: var(--red);
+    }
+    .model-picker-connector-filter {
+      width: 100%;
+      box-sizing: border-box;
+      margin: 5px 0 2px;
+      padding: 5px 7px;
+      font: inherit;
+      font-size: 10px;
+      color: var(--fg);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .model-picker-connector-filter:focus {
+      outline: none;
       border-color: var(--red);
     }
     .model-picker-menu input[type="text"]::placeholder {
@@ -41863,6 +41890,7 @@ body.theme-frosted .modal {
 }
 
 #code-editor-root .code-editor-tabs { align-self: stretch; gap: 4px; padding: 0; }
+#code-editor-root .code-editor-breadcrumb { min-width: 0; flex: 1 1 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ce-subtle); font: 11px var(--font-mono, monospace); opacity: .8; }
 #code-editor-root .code-editor-tab {
   align-self: stretch;
   gap: 6px;
@@ -42046,9 +42074,11 @@ body.theme-frosted .modal {
 }
 
 @media (max-width: 700px) {
-  #code-editor-root .code-editor-toolbar { align-items: flex-start; }
+  #code-editor-root .code-editor-toolbar { align-items: flex-start; overflow: hidden; }
   #code-editor-root .code-editor-tabs { min-height: 34px; }
-  #code-editor-root .code-editor-actions { max-height: 70px; overflow: auto; }
+  #code-editor-root .code-editor-breadcrumb { order: 3; flex-basis: 100%; padding: 0 4px 2px; }
+  #code-editor-root .code-editor-actions { flex: 1 1 100%; max-height: 70px; overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; justify-content: flex-start; scrollbar-width: thin; }
+  #code-editor-root .code-editor-action-btn { flex: 0 0 auto; white-space: nowrap; }
   #code-editor-root .code-editor-statusbar { gap: 8px; overflow-x: auto; white-space: nowrap; }
   #code-editor-root .code-editor-sidebar { position: absolute; z-index: 4; height: 100%; box-shadow: 10px 0 24px color-mix(in srgb, var(--bg) 45%, transparent); }
   #code-editor-root .editor-preview-panel { position: absolute; z-index: 3; inset: 0; width: auto; border-left: 0; }

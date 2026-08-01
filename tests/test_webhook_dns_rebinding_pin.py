@@ -62,7 +62,10 @@ def test_validated_public_ips_rejects_hostname_resolving_private(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _serve(handler):
-    srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
+    try:
+        srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
+    except PermissionError:
+        pytest.skip("The test environment does not permit loopback sockets")
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, port

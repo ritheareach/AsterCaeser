@@ -58,7 +58,10 @@ def test_dav_client_does_not_follow_redirect_to_internal_host():
         def log_message(self, *a):
             pass
 
-    internal = socketserver.TCPServer(("127.0.0.1", 0), _Internal)
+    try:
+        internal = socketserver.TCPServer(("127.0.0.1", 0), _Internal)
+    except PermissionError:
+        pytest.skip("The test environment does not permit loopback sockets")
     internal_port = internal.server_address[1]
     public = socketserver.TCPServer(("127.0.0.1", 0), _Public)
     public_port = public.server_address[1]

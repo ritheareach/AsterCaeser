@@ -959,7 +959,9 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         _displayOverride = `[Doc edit: ${lineRefs.join(', ')}] ${msg}`;
       }
 
-      const userDisplay = _displayOverride || msg;
+      const editorDisplay = messageInput.dataset.astercaeserDisplayMessage || '';
+      delete messageInput.dataset.astercaeserDisplayMessage;
+      const userDisplay = _displayOverride || editorDisplay || msg;
       _displayOverride = null;
       const skipBubble = _hideUserBubble;
       _hideUserBubble = false;

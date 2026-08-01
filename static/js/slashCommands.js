@@ -64,6 +64,7 @@ const SETUP_PROVIDER_NAMES = ['deepseek', 'openai', 'openrouter', 'ollama', 'xai
 const SETUP_DEVICE_AUTH_PROVIDERS = [
   { key: 'copilot', name: 'GitHub Copilot', aliases: ['github'], command: '/setup copilot' },
   { key: 'chatgpt-subscription', name: 'ChatGPT Subscription', aliases: ['chatgptsubscription', 'chatgpt-sub', 'codex'], command: '/setup chatgpt-subscription' },
+  { key: 'antigravity-subscription', name: 'Antigravity Subscription', aliases: ['antigravitysubscription', 'antigravity-sub', 'agy'], command: '/setup antigravity-subscription' },
 ];
 const SETUP_PROVIDER_HINT_NAMES = SETUP_PROVIDER_NAMES.concat(SETUP_DEVICE_AUTH_PROVIDERS.map(provider => provider.key));
 const SETUP_PROVIDER_HINT = SETUP_PROVIDER_HINT_NAMES.slice(0, -1).join(', ') + ', or ' + SETUP_PROVIDER_HINT_NAMES[SETUP_PROVIDER_HINT_NAMES.length - 1];
@@ -5867,6 +5868,7 @@ const COMMANDS = {
       ollama:     { help: 'Ollama Cloud',  usage: '/setup ollama KEY',          handler: (a, c) => _cmdSetup(['ollama',     ...a], c) },
       copilot:    { help: 'GitHub Copilot', usage: '/setup copilot',            handler: (a, c) => _cmdSetup(['copilot',    ...a], c) },
       'chatgpt-subscription': { help: 'ChatGPT Subscription', alias: ['codex'], usage: '/setup chatgpt-subscription', handler: (a, c) => _cmdSetup(['chatgpt-subscription', ...a], c) },
+      'antigravity-subscription': { help: 'Antigravity Subscription', alias: ['agy'], usage: '/setup antigravity-subscription', handler: (a, c) => _cmdSetup(['antigravity-subscription', ...a], c) },
       local:      { help: 'Local model server (vLLM / LM Studio / llama.cpp / Ollama)',
                     usage: '/setup local http://localhost:8000/v1',
                     handler: (a, c) => _cmdSetup(['local', ...a], c) },

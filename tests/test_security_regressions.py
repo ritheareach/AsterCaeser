@@ -1319,7 +1319,11 @@ def test_dns_rebinding_pinned_transport_dials_pinned_ip(monkeypatch):
     # response.
     captured = {"request": b""}
     server_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    server_sock.bind(("127.0.0.1", 0))
+    try:
+        server_sock.bind(("127.0.0.1", 0))
+    except PermissionError:
+        server_sock.close()
+        pytest.skip("The test environment does not permit loopback sockets")
     server_sock.listen(1)
     port = server_sock.getsockname()[1]
 

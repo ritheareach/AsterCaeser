@@ -5,7 +5,7 @@
 import Storage from './js/storage.js';
 import uiModule from './js/ui.js';
 import workspaceModule from './js/workspace.js';
-import { initProjectManager } from './js/projectManager.js';
+import { initProjectManager, openCodeEditor } from './js/projectManager.js';
 import { initCodeEditor } from './js/editor/editor.js';
 import fileHandlerModule from './js/fileHandler.js';
 import modelsModule from './js/models.js';
@@ -1872,6 +1872,9 @@ function initializeEventListeners() {
   setupToggle('bash-toggle-btn', 'bash-toggle', 'bash');
   try { workspaceModule.initWorkspace(); } catch (_) {}
   try { initProjectManager(); } catch (e) { console.warn('projectManager init:', e); }
+  document.getElementById('tool-code-editor-btn')?.addEventListener('click', () => {
+    openCodeEditor().catch(error => uiModule.showError?.(`Could not open code editor: ${error.message}`));
+  });
 
   // Document editor toggle (special: uses module panel, not a checkbox)
   function bringOpenDocumentToFrontOnMobile() {

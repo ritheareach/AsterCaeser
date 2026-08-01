@@ -872,6 +872,9 @@ def _detect_provider(url: str) -> str:
     from src.chatgpt_subscription import is_chatgpt_subscription_base
     if is_chatgpt_subscription_base(url):
         return "chatgpt-subscription"
+    from src.antigravity_subscription import is_antigravity_subscription_base
+    if is_antigravity_subscription_base(url):
+        return "antigravity-subscription"
     from src.copilot import is_copilot_base
     if is_copilot_base(url):
         return "copilot"

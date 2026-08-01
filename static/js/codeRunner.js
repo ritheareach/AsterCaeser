@@ -309,7 +309,7 @@ try {
  * Run code server-side via POST /api/shell/exec
  */
 export async function runServer(code, panel, lang) {
-  showLoading(panel, 'Running on server...');
+  showLoading(panel, 'Running on server (admin)…');
   // Base64-encode the script so newlines survive the shell quoting intact.
   // JSON.stringify turns \n into literal \\n which python3 -c sees as backslash-n;
   // base64 avoids every quoting/escaping pitfall.
@@ -328,6 +328,12 @@ export async function runServer(code, panel, lang) {
       body: JSON.stringify({ command: command }),
     });
     var data = await res.json();
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string'
+        ? data.detail
+        : data.detail?.message || data.message || `Server execution failed (HTTP ${res.status})`;
+      throw new Error(detail);
+    }
     panel.innerHTML = '';
     if (data.stderr && data.stderr.trim()) {
       showOutput(panel, data.stderr, true);
@@ -355,21 +361,28 @@ export async function runServer(code, panel, lang) {
 }
 
 /**
- * Run HTML code in its own popup window
+ * Run HTML in a popup whose preview content is sandboxed with an opaque origin.
+ * The popup itself stays same-origin, but the user HTML cannot access it, app
+ * cookies, localStorage, or authenticated APIs.
  */
 export function runHTML(code, panel) {
   panel.innerHTML = '';
 
-  const win = window.open('', '_blank', 'width=800,height=600,menubar=no,toolbar=no,location=no,status=no');
+  const win = window.open('', '_blank', 'noopener,noreferrer,width=800,height=600,menubar=no,toolbar=no,location=no,status=no');
   if (!win) {
     showOutput(panel, 'Popup blocked — please allow popups for this site.', true);
     addCloseBtn(panel);
     return;
   }
   try { win.opener = null; } catch (_) {}
-  win.document.open();
-  win.document.write(code);
-  win.document.close();
+  win.document.title = 'HTML Preview';
+  const frame = win.document.createElement('iframe');
+  frame.title = 'Sandboxed HTML preview';
+  frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals');
+  frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;background:white;';
+  frame.srcdoc = String(code || '');
+  win.document.body.style.margin = '0';
+  win.document.body.appendChild(frame);
 
   showOutput(panel, 'Opened in new window', false);
   addCloseBtn(panel);

@@ -754,6 +754,25 @@ export async function initProjectManager() {
 
 export function getActiveProjectId() { return state.activeProjectId; }
 export function getActiveWorkspaceId() { return state.activeWorkspaceId; }
+export async function openCodeEditor() {
+  await initProjectManager();
+  const project = currentProject();
+  if (project?.path) {
+    document.dispatchEvent(new CustomEvent('open-editor', {
+      detail: { projectId: project.id, workspaceId: project.workspace_id, path: project.path, project },
+    }));
+    return true;
+  }
+  const modal = document.getElementById('workspace-main-content');
+  const tab = document.getElementById('workspace-tab');
+  if (!modal || !tab) return false;
+  state.view = 'workspace';
+  modal.classList.remove('hidden');
+  tab.setAttribute('aria-expanded', 'true');
+  render();
+  modal.querySelector('.workspace-manager-modal-content button, .workspace-manager-modal-content [tabindex="0"]')?.focus({ preventScroll: true });
+  return true;
+}
 export function refreshProjectManager() { return refreshWorkspaceState(); }
 
-export default { initProjectManager, getActiveProjectId, getActiveWorkspaceId, refreshProjectManager };
+export default { initProjectManager, getActiveProjectId, getActiveWorkspaceId, openCodeEditor, refreshProjectManager };

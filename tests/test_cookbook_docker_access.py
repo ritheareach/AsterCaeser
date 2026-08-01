@@ -1,4 +1,7 @@
 import socket
+import os
+import tempfile
+import errno
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,18 +62,26 @@ async def test_container_cli_only_is_rejected(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_container_opt_in_with_unix_socket_is_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr(cookbook_routes.shutil, "which", lambda binary: "/usr/bin/docker")
-    socket_path = tmp_path / "docker.sock"
+    # macOS AF_UNIX paths are limited to roughly 104 bytes. pytest's nested
+    # temporary directory can exceed that limit before the socket is created.
+    socket_dir = "/private/tmp" if os.path.isdir("/private/tmp") else tempfile.gettempdir()
+    socket_path = os.path.join(socket_dir, f"astercaeser-docker-{os.getpid()}.sock")
 
-    with socket.socket(socket.AF_UNIX) as unix_socket:
-        unix_socket.bind(str(socket_path))
-        available = await cookbook_routes._binary_available(
-            "docker",
-            None,
-            None,
-            in_container=True,
-            environ={"ASTERCAESER_ENABLE_HOST_DOCKER": "true"},
-            socket_path=str(socket_path),
-        )
+    try:
+        with socket.socket(socket.AF_UNIX) as unix_socket:
+            unix_socket.bind(socket_path)
+            available = await cookbook_routes._binary_available(
+                "docker",
+                None,
+                None,
+                in_container=True,
+                environ={"ASTERCAESER_ENABLE_HOST_DOCKER": "true"},
+                socket_path=socket_path,
+            )
+    except OSError as error:
+        if error.errno in {errno.EACCES, errno.EPERM}:
+            pytest.skip("The test environment does not permit Unix-domain sockets")
+        raise
 
     assert available is True
 

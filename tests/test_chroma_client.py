@@ -15,7 +15,11 @@ import src.chroma_client as cc
 def _free_port() -> int:
     """Bind to port 0, grab the assigned port, release it — nothing listens."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
+    try:
+        s.bind(("127.0.0.1", 0))
+    except PermissionError:
+        s.close()
+        pytest.skip("The test environment does not permit loopback sockets")
     port = s.getsockname()[1]
     s.close()
     return port
@@ -31,7 +35,11 @@ def test_port_open_false_for_closed_port_and_is_fast():
 
 def test_port_open_true_for_listening_socket():
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.bind(("127.0.0.1", 0))
+    try:
+        srv.bind(("127.0.0.1", 0))
+    except PermissionError:
+        srv.close()
+        pytest.skip("The test environment does not permit loopback sockets")
     srv.listen(1)
     host, port = srv.getsockname()
     try:

@@ -116,9 +116,26 @@ def resolve_endpoint_runtime(ep, owner: Optional[str] = None) -> Tuple[str, Opti
     api_key = getattr(ep, "api_key", None)
     auth_id = getattr(ep, "provider_auth_id", None)
     if auth_id:
-        from src.chatgpt_subscription import resolve_runtime_credentials
+        provider_name = ""
+        try:
+            from core.database import ProviderAuthSession, SessionLocal
+            db = SessionLocal()
+            try:
+                auth_row = db.query(ProviderAuthSession).filter(ProviderAuthSession.id == auth_id).first()
+                if auth_row:
+                    provider_name = auth_row.provider or ""
+            finally:
+                db.close()
+        except Exception:
+            pass
 
-        creds = resolve_runtime_credentials(auth_id, owner=owner)
+        if provider_name == "antigravity-subscription":
+            from src.antigravity_subscription import resolve_runtime_credentials as resolve_antigravity
+            creds = resolve_antigravity(auth_id, owner=owner)
+        else:
+            from src.chatgpt_subscription import resolve_runtime_credentials as resolve_chatgpt
+            creds = resolve_chatgpt(auth_id, owner=owner)
+
         base = normalize_base(creds.get("base_url") or base)
         api_key = creds.get("api_key")
     return base, api_key
@@ -292,6 +309,9 @@ def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
     if provider == "chatgpt-subscription":
         from src.chatgpt_subscription import chatgpt_headers
         return chatgpt_headers(api_key)
+    if provider == "antigravity-subscription":
+        from src.antigravity_subscription import antigravity_headers
+        return antigravity_headers(api_key)
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     if provider == "openrouter":

@@ -63,6 +63,9 @@ export class ProjectTerminal {
     this.disposed = false;
     this.resizeFrame = null;
     this.decoder = new TextDecoder();
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.maxReconnectAttempts = 5;
   }
 
   open() {
@@ -111,6 +114,8 @@ export class ProjectTerminal {
     if (this.disposed) return;
     this.disposed = true;
     if (this.resizeFrame) cancelAnimationFrame(this.resizeFrame);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.dataSubscription?.dispose();
@@ -138,6 +143,7 @@ export class ProjectTerminal {
     socket.addEventListener('open', () => {
       if (this.disposed || socket !== this.socket) return;
       this._setState('connected', 'Project shell connected');
+      this.reconnectAttempt = 0;
       this.terminal?.writeln('\x1b[90mConnected. Shell runs in this project root.\x1b[0m');
       this.refresh();
     });
@@ -155,7 +161,24 @@ export class ProjectTerminal {
           : 'Terminal connection closed';
       this._setState(wasError ? 'error' : 'closed', message);
       this.terminal?.writeln(`\r\n\x1b[90mTerminal connection closed (${event.code}).\x1b[0m`);
+      if (wasError) this._scheduleReconnect();
     });
+  }
+
+  _scheduleReconnect() {
+    if (this.disposed || this.reconnectTimer || this.reconnectAttempt >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempt >= this.maxReconnectAttempts) {
+        this._setState('error', 'Terminal disconnected — retry by reopening the panel');
+      }
+      return;
+    }
+    const attempt = ++this.reconnectAttempt;
+    const delay = Math.min(1000 * (2 ** (attempt - 1)), 8000);
+    this._setState('reconnecting', `Terminal disconnected — reconnecting (${attempt}/${this.maxReconnectAttempts})…`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.disposed) this._connect();
+    }, delay);
   }
 
   _receive(event) {

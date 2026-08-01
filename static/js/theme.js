@@ -37,6 +37,7 @@ const CUSTOM_THEMES_KEY = 'astercaeser-custom-themes';
 
 const FONT_MAP = {
   mono: "'Fira Code', monospace",
+  fira: "'Fira Code', monospace",
   sans: "system-ui, -apple-system, 'Segoe UI', sans-serif",
   serif: "Georgia, 'Times New Roman', serif",
   opendyslexic: "'OpenDyslexic', sans-serif",

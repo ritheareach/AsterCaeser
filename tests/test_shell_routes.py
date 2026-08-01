@@ -1,11 +1,13 @@
 """Tests for shell_routes.py helpers."""
 
 import builtins
+import errno
 import importlib
 import importlib.util
 import json
 import os
 import socket
+import tempfile
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -278,6 +280,23 @@ class TestDockerRowStatus:
 
 
 class TestHostDockerAccess:
+    @staticmethod
+    def _socket_path():
+        socket_dir = "/private/tmp" if os.path.isdir("/private/tmp") else tempfile.gettempdir()
+        return os.path.join(socket_dir, f"astercaeser-test-docker-{os.getpid()}.sock")
+
+    @staticmethod
+    def _bind_socket(path):
+        unix_socket = socket.socket(socket.AF_UNIX)
+        try:
+            unix_socket.bind(path)
+        except OSError as error:
+            unix_socket.close()
+            if error.errno in {errno.EACCES, errno.EPERM}:
+                pytest.skip("The test environment does not permit Unix-domain sockets")
+            raise
+        return unix_socket
+
     def test_opt_in_without_socket_is_disabled(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ASTERCAESER_ENABLE_HOST_DOCKER", "true")
 
@@ -297,9 +316,8 @@ class TestHostDockerAccess:
         tmp_path,
         flag,
     ):
-        socket_path = tmp_path / "docker.sock"
-        with socket.socket(socket.AF_UNIX) as unix_socket:
-            unix_socket.bind(str(socket_path))
+        socket_path = self._socket_path()
+        with self._bind_socket(socket_path):
             if flag is None:
                 monkeypatch.delenv("ASTERCAESER_ENABLE_HOST_DOCKER", raising=False)
             else:
@@ -312,9 +330,8 @@ class TestHostDockerAccess:
         monkeypatch,
         tmp_path,
     ):
-        socket_path = tmp_path / "docker.sock"
-        with socket.socket(socket.AF_UNIX) as unix_socket:
-            unix_socket.bind(str(socket_path))
+        socket_path = self._socket_path()
+        with self._bind_socket(socket_path):
             monkeypatch.setenv("ASTERCAESER_ENABLE_HOST_DOCKER", "true")
 
             assert _host_docker_access_enabled(str(socket_path)) is True

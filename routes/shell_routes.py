@@ -394,17 +394,17 @@ def _find_line_break(buf):
 
 
 EXEC_TIMEOUT = 30  # seconds — shorter than agent's 60s
+MAX_EXEC_TIMEOUT = 120  # non-streaming editor runs must always be bounded
 STREAM_TIMEOUT = 120  # default for short commands
 MAX_OUTPUT = 200_000  # truncate limit
+MAX_COMMAND_LENGTH = 200_000
 TMUX_LOG_DIR = Path(tempfile.gettempdir()) / "astercaeser-tmux"
 PTY_UNSUPPORTED_ERROR = "pty_unsupported"
 
 
 class ShellExecRequest(BaseModel):
     command: str
-    timeout: int | None = (
-        None  # optional override; 0 = no timeout (run until client disconnects)
-    )
+    timeout: int | None = None
     use_pty: bool = False  # use pseudo-TTY (for progress bars)
     use_tmux: bool = False  # run in tmux session (survives browser disconnect)
 
@@ -862,9 +862,15 @@ def setup_shell_routes() -> APIRouter:
     async def shell_exec(request: Request, req: ShellExecRequest) -> Dict[str, Any]:
         """Execute a shell command and return output. Admin only."""
         _require_admin(request)
+        _reject_cross_site(request)
         cmd = req.command.strip()
         if not cmd:
             return {"stdout": "", "stderr": "No command provided", "exit_code": 1}
+        if len(cmd) > MAX_COMMAND_LENGTH:
+            raise HTTPException(413, "Command is too large")
+        timeout = req.timeout if req.timeout is not None else EXEC_TIMEOUT
+        if isinstance(timeout, bool) or timeout < 1 or timeout > MAX_EXEC_TIMEOUT:
+            raise HTTPException(422, f"Execution timeout must be between 1 and {MAX_EXEC_TIMEOUT} seconds")
 
         fixed_cmd = _normalize_legacy_remote_tmux_exec(cmd)
         if fixed_cmd != cmd:
@@ -872,7 +878,7 @@ def setup_shell_routes() -> APIRouter:
             cmd = fixed_cmd
         logger.info("User shell exec requested: length=%d", len(cmd))
         result = await _exec_shell(
-            cmd, timeout=req.timeout if req.timeout is not None else EXEC_TIMEOUT
+            cmd, timeout=timeout
         )
         return result
 
