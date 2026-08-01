@@ -2138,6 +2138,113 @@ async function initShortcuts() {
   render();
 }
 
+async function initSystemUpdate() {
+  const button = el('system-update-check-btn');
+  const status = el('system-update-status');
+  if (!button || !status) return;
+  const checkpoint = el('system-update-checkpoint-btn');
+  const fetchUpdates = el('system-update-fetch-btn');
+  const commitSelect = el('system-update-commit-select');
+  const commitDetails = el('system-update-commit-details');
+  const prepare = el('system-update-prepare-btn');
+  const test = el('system-update-test-btn');
+  const apply = el('system-update-apply-btn');
+  const abort = el('system-update-abort-btn');
+  const run = async (action, label, extra = {}) => {
+    const controls = [button, fetchUpdates, commitSelect, checkpoint, prepare, test, apply, abort].filter(Boolean);
+    controls.forEach(control => { control.disabled = true; });
+    status.textContent = `${label}…`;
+    try {
+      const response = await fetch('/api/system-update/action', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...extra }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || result.message || 'System update action failed.');
+      status.textContent = result.message || 'Done.';
+      const conflictText = result.conflicts?.length ? ` Conflicts: ${result.conflicts.join(', ')}` : '';
+      if (conflictText) status.textContent += conflictText;
+      if (result.conflicts?.length && commitDetails) {
+        commitDetails.textContent = `Conflicting files:\n${result.conflicts.join('\n')}\n\nResolve these files before running tests or applying the update.`;
+        commitDetails.style.display = '';
+      }
+      if (apply) apply.style.display = result.phase === 'ready' || result.phase === 'tested' ? '' : 'none';
+      if (test) test.style.display = result.phase === 'ready' ? '' : 'none';
+      if (abort) abort.style.display = result.phase === 'conflicts' || result.phase === 'ready' ? '' : 'none';
+      uiModule.showToast(result.message || 'System update step complete');
+    } catch (error) {
+      status.textContent = `${label} failed: ${error.message}`;
+    } finally {
+      controls.forEach(control => { control.disabled = false; });
+    }
+  };
+  button.addEventListener('click', async () => {
+    status.textContent = 'Checking local Git state…';
+    try {
+      const response = await fetch('/api/system-update/status', { credentials: 'same-origin' });
+      const result = await response.json();
+      if (!response.ok || result.exit_code) throw new Error(result.stderr || 'Could not inspect the repository.');
+      const output = String(result.stdout || '').trim();
+      if (!result.upstream_available) throw new Error(`Could not reach Odysseus upstream: ${result.upstream_error || 'unknown error'}`);
+      status.textContent = 'Local repository found; official Odysseus upstream is reachable.';
+      status.title = `${result.upstream_url}\n\n${output}`;
+      uiModule.showToast('System update status checked');
+    } catch (error) {
+      status.textContent = `Update check failed: ${error.message}`;
+      status.title = '';
+    } finally {
+      button.disabled = false;
+    }
+  });
+  fetchUpdates?.addEventListener('click', async () => {
+    fetchUpdates.disabled = true;
+    status.textContent = 'Fetching upstream commit history…';
+    try {
+      const response = await fetch('/api/system-update/action', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'fetch' }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not fetch upstream commits.');
+      commitSelect.innerHTML = '<option value="">Latest upstream commit</option>';
+      for (const commit of result.commits || []) {
+        const option = document.createElement('option');
+        option.value = commit.hash;
+        option.textContent = `${commit.short} — ${commit.subject}`;
+        option.dataset.files = JSON.stringify(commit.files || []);
+        commitSelect.appendChild(option);
+      }
+      commitSelect.style.display = result.commits?.length ? '' : 'none';
+      status.textContent = result.message;
+      uiModule.showToast(result.message);
+    } catch (error) {
+      status.textContent = `Fetch failed: ${error.message}`;
+    } finally { fetchUpdates.disabled = false; }
+  });
+  commitSelect?.addEventListener('change', () => {
+    const option = commitSelect.selectedOptions[0];
+    const files = option?.dataset.files ? JSON.parse(option.dataset.files) : [];
+    commitDetails.textContent = option?.value ? `Selected commit: ${option.textContent}\n\nChanged files:\n${files.join('\n') || '(no file list)'}` : '';
+    commitDetails.style.display = option?.value ? '' : 'none';
+  });
+  checkpoint?.addEventListener('click', () => {
+    if (window.confirm('Create a Git checkpoint containing the current customized files?')) run('checkpoint', 'Creating backup checkpoint');
+  });
+  prepare?.addEventListener('click', () => {
+    if (window.confirm('Prepare the selected Odysseus commit on a separate review branch?')) {
+      run('prepare', 'Preparing review branch', { commit: commitSelect?.value || null });
+    }
+  });
+  test?.addEventListener('click', () => run('test', 'Running tests'));
+  apply?.addEventListener('click', () => {
+    if (window.confirm('Apply the prepared update on the review branch?')) run('apply', 'Applying update');
+  });
+  abort?.addEventListener('click', () => {
+    if (window.confirm('Abort the prepared update merge? Your backup remains preserved.')) run('abort', 'Aborting update');
+  });
+}
+
 /* ═══════════════════════════════════════════
    INIT & REFRESH
    ═══════════════════════════════════════════ */
@@ -2348,6 +2455,7 @@ function initAll() {
   initAgentSettings();
   initAppearance();
   initShortcuts();
+  initSystemUpdate();
   initAccount();
   initIntegrations();
   initEmailSettings();

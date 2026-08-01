@@ -245,6 +245,7 @@ app.add_middleware(_SlowRequestLogMiddleware)
 
 # ========= AUTH =========
 from routes.auth_routes import setup_auth_routes, SESSION_COOKIE
+from routes.system_update_routes import setup_system_update_routes
 
 auth_manager = AuthManager()
 app.state.auth_manager = auth_manager
@@ -785,6 +786,7 @@ app.include_router(setup_cookbook_routes())
 
 from routes.workspace_routes import setup_workspace_routes
 app.include_router(setup_workspace_routes())
+app.include_router(setup_system_update_routes())
 
 # Hardware model fitting (cookbook "What Fits?" tab)
 from routes.hwfit_routes import setup_hwfit_routes
