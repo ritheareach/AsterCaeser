@@ -42,6 +42,10 @@ from src.agent_tools import (
 
 logger = logging.getLogger(__name__)
 
+_PROJECT_FILE_TOOLS = {
+    "read_file", "write_file", "edit_file", "grep", "glob", "ls", "get_workspace", "bash",
+}
+
 
 def _looks_like_notes_list_request(text: str) -> bool:
     """Whether the user is asking to see existing notes, not create one."""
@@ -460,6 +464,11 @@ Generate an image. Line 1 = description, line 2 = model name, line 3 = WxH (e.g.
     "chat_with_model": "- ```chat_with_model``` — Ask a DIFFERENT AI model and relay its answer. Line 1 = model name (or 'model@endpoint'), rest = your message. Use when the user says 'ask <model>', 'what does <model> think', or wants to compare/their answer from another model.",
     "ask_teacher": "- ```ask_teacher``` — Escalate a hard question to a more capable model. Line 1 = model name or 'auto', rest = the question. Use when stuck or need expert knowledge.",
     "list_models": "- ```list_models``` — Show all available AI models across all endpoints. Use when user asks what models are available.",
+    "spawn_subagent": """\
+```spawn_subagent
+{"prompt": "self-contained task for the subagent (include all needed context — its context is fresh)", "model": "optional model@endpoint", "tools": ["optional", "explicit", "allowlist"], "max_rounds": 6}
+```
+Delegate a task to a fresh-context subagent that works autonomously with its own (restricted) tools and returns a final answer. Use for deep research, large file analysis, or multi-step work you do not want to do inline. The subagent cannot ask the user questions and by default has a safe read-mostly tool set (no shell). Include 'bash' or 'edit_file'/'write_file' in `tools` only when the task genuinely requires them.""",
     "manage_session": "- ```manage_session``` — Rename, archive, delete, fork, switch, or `list` chats (the UI calls them 'chats'; 'session' is internal). Line 1 = action (list/switch/rename/archive/unarchive/delete/important/unimportant/truncate/fork), Line 2 = exact chat id from `list_sessions` (or `current` where supported). For delete/archive/truncate, always list first and reuse the exact id; never invent placeholder ids. `switch`/`open` returns a clickable anchor link the user can tap to open the chat — use for \"open my X chat\".",
     "manage_memory": "- ```manage_memory``` — Manage the user's persistent memory (facts about the USER themselves, their preferences, context that persists across chats). Line 1 = action (list/add/edit/delete/search), rest = content. Use when user says 'remember this' about themselves, states identity facts like 'my name is <name>' / 'call me <name>' / 'I live in <place>', or asks about stored memories. DO NOT use for info about another person (their address, phone, email, birthday) — that goes in `manage_contact`. If the user pastes an address/phone with a name and says 'save this for <person>', use `manage_contact add` with the address arg, NOT manage_memory.",
     "manage_skills": "- ```manage_skills``` — Skill registry (SKILL.md format). Args (JSON): {\"action\": \"list|view|view_ref|search|add|edit|patch|publish|delete\", ...}. `list` returns the index of available skills (published + teacher-escalation drafts); `view name=foo` fetches the full SKILL.md; `view_ref name=foo path=...` loads a reference file under the skill directory. For `add`, provide an explicit kebab-case `name` and only report the exact returned name, because storage may normalize or dedupe it. Use this BEFORE doing domain work — there may already be a procedure (published or draft) that prescribes the correct steps. Drafts written by the teacher loop are authoritative guidance even though they're not yet published.",
@@ -2511,6 +2520,10 @@ WEBVIEW_DIRECTIVE = (
     "The user is asking about the page in the web preview (webview context above). "
     "The visible page text is included so you can read its numbers, but it is only "
     "a snapshot — do NOT treat it as the whole story.\n"
+    "If the context includes a `[Live webview content ...]` block, it came from "
+    "the currently rendered preview. For questions about what is visible, answer "
+    "from that block directly. Do not claim the browser is unavailable and do not "
+    "replace it with stale source-code assumptions.\n"
     "\n"
     "If they ask HOW something works, WHAT backs a number, WHY the page shows "
     "something, or want anything changed on the page: investigate the actual "
@@ -2583,6 +2596,7 @@ async def stream_agent_loop(
     approved_plan: Optional[str] = None,
     tool_policy: Optional[ToolPolicy] = None,
     workspace: Optional[str] = None,
+    project_file_access: bool = False,
     forced_tools: Optional[Set[str]] = None,
     uploaded_files: Optional[List[Dict]] = None,
     workload: str = "foreground",
@@ -2608,6 +2622,12 @@ async def stream_agent_loop(
             mcp_mgr = None
     guide_only = bool(tool_policy and tool_policy.mode == "guide_only")
     public_blocked_tools = blocked_tools_for_owner(owner)
+    if project_file_access and workspace:
+        # A project owner may use the file tools inside that project only. The
+        # workspace resolver still prevents traversal and sensitive paths.
+        # `bash` is intercepted as a Git-only tool for project users; Python,
+        # MCP, and account-management tools remain blocked.
+        public_blocked_tools.difference_update(_PROJECT_FILE_TOOLS)
     if public_blocked_tools:
         disabled_tools.update(public_blocked_tools)
         # MCP tools are namespaced dynamically, so hide all MCP schemas for
@@ -2966,6 +2986,9 @@ async def stream_agent_loop(
             or _prompt_active_document is not None
         )
         and "files" not in _intent_domains
+        # Project coding chats must retain their confined filesystem tools even
+        # when a PDF/document is open beside the chat.
+        and not project_file_access
         and not guide_only
     )
     _ody_notes_finetune_mode = (
@@ -4126,6 +4149,7 @@ async def stream_agent_loop(
                             owner=owner,
                             progress_cb=_push_progress,
                             workspace=workspace,
+                            project_file_access=project_file_access,
                         )
                     finally:
                         # Sentinel so the drainer knows to stop.

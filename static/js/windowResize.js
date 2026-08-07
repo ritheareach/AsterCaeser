@@ -22,7 +22,9 @@
 //     onResizeEnd,  // ({rect}) => void
 //   })
 
-const EDGE = 7;          // px proximity to a border that arms a resize grip
+// A 12px edge target is forgiving enough to grab without accidentally
+// starting a resize from normal panel content.
+const EDGE = 12;
 const MIN_W = 320;       // smallest a window may be dragged to
 const MIN_H = 200;
 // Controls that must keep their own click/drag behaviour even when they sit
@@ -83,6 +85,8 @@ export function makeWindowResizable(content, options = {}) {
   let resizing = false;
   let active = null;
   let startRect = null, startX = 0, startY = 0;
+  let resizeFrame = 0;
+  let pendingPoint = null;
 
   function begin(cx, cy, edges) {
     resizing = true;
@@ -110,11 +114,12 @@ export function makeWindowResizable(content, options = {}) {
     content.style.height = r.height + 'px';
     content.style.maxWidth = 'none';
     content.style.maxHeight = 'none';
+    content.style.willChange = 'left, top, width, height';
     document.body.classList.add('window-resizing-active');
     document.body.style.cursor = cursorFor(edges);
   }
 
-  function move(cx, cy) {
+  function applyMove(cx, cy) {
     if (!resizing) return;
     const dx = cx - startX, dy = cy - startY;
     let { left, top, width, height } = startRect;
@@ -138,12 +143,39 @@ export function makeWindowResizable(content, options = {}) {
     content.style.height = height + 'px';
   }
 
+  // Resize events can arrive much faster than the browser can lay out a
+  // complex tool panel. Coalescing visual writes to one per frame keeps the
+  // edge attached to the pointer instead of stuttering under load.
+  function move(cx, cy) {
+    if (!resizing) return;
+    pendingPoint = { x: cx, y: cy };
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      const point = pendingPoint;
+      pendingPoint = null;
+      if (point && resizing) applyMove(point.x, point.y);
+    });
+  }
+
+  function flushPendingMove() {
+    if (resizeFrame) {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = 0;
+    }
+    const point = pendingPoint;
+    pendingPoint = null;
+    if (point && resizing) applyMove(point.x, point.y);
+  }
+
   function end() {
     if (!resizing) return;
+    flushPendingMove();
     resizing = false;
     content.classList.remove('window-resizing');
     document.body.classList.remove('window-resizing-active');
     document.body.style.cursor = '';
+    content.style.willChange = '';
     clearHoverCursor();
     const r = content.getBoundingClientRect();
     if (storageKey) {

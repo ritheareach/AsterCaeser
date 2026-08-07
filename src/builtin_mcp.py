@@ -95,7 +95,12 @@ def builtin_browser_launch_args() -> list[str]:
     window to sign in, then flip it back on.
     """
     from src.settings import get_setting
-    args = ["-y", "@playwright/mcp@latest"]
+    # Do not ask Playwright for the machine's Google Chrome channel.  That
+    # makes browser tools fail on systems where Chrome is absent or installed
+    # somewhere other than /Applications, even though Playwright can use its
+    # own managed Chromium runtime.  The managed runtime also keeps agent
+    # automation isolated from the user's daily browser profile.
+    args = ["-y", "@playwright/mcp@latest", "--browser", "chromium"]
     if get_setting("browser_headless", True):
         args.append("--headless")
     profile = str(get_setting("browser_user_data_dir", "") or "").strip()

@@ -168,6 +168,12 @@ async def subscribe(session_id: str) -> AsyncGenerator[str, None]:
     if run.evict_task and not run.evict_task.done():
         run.evict_task.cancel()
     try:
+        # Send a comment immediately so intermediaries flush the SSE response
+        # before the agent produces its first event.  Without this preamble,
+        # some browser/proxy paths buffer the response until a later tool or
+        # text event; the user sees their message saved but no live assistant
+        # status or reply while the agent is actually working.
+        yield ": connected\n\n"
         next_seq = 0
         while next_seq < len(run.buffer):
             yield run.buffer[next_seq]

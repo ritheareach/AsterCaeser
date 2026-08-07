@@ -5035,7 +5035,7 @@ async function _setupProviderDeviceFlow(providerKey) {
   try {
     const result = await runProviderDeviceFlow(providerKey, {
       onStart: async ({ start, authUrl }) => {
-        const place = providerKey === 'copilot' ? 'GitHub' : 'OpenAI';
+        const place = providerKey === 'copilot' ? 'GitHub' : (providerKey === 'antigravity-subscription' ? 'Google' : 'OpenAI');
         const action = providerKey === 'copilot' ? 'approve the request' : 'enter the code';
         if (providerKey === 'chatgpt-subscription') {
           slashReply(
@@ -5080,6 +5080,16 @@ async function _cmdSetup(args, ctx) {
   const topicArgs = args.slice(1);
   const deviceAuthProvider = _setupDeviceAuthProviderFromInput(topic);
   if (deviceAuthProvider) {
+    const credential = topicArgs.join(' ').trim();
+    if (credential) {
+      const cfg = PROVIDER_DEVICE_FLOWS[deviceAuthProvider];
+      await connectDetectedSetupEndpoint({
+        base_url: (cfg && cfg.defaultBaseUrl) || 'https://generativelanguage.googleapis.com/v1beta/openai',
+        api_key: credential,
+        name: (cfg && cfg.label) || 'Antigravity Subscription'
+      });
+      return true;
+    }
     await _setupProviderDeviceFlow(deviceAuthProvider);
     return true;
   }

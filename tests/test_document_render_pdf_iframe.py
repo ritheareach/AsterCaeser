@@ -62,6 +62,14 @@ async def test_doc_render_pdf_same_origin_framing():
     assert "frame-ancestors 'self'" in csp
 
 
+async def test_doc_source_pdf_same_origin_framing():
+    """The browser-native PDF fallback is also embedded in the document pane."""
+    resp = await _dispatch("/api/document/abc-123/source-pdf")
+
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in resp.headers.get("Content-Security-Policy", "")
+
+
 async def test_doc_render_pdf_keeps_baseline_security_headers():
     """Assert that baseline security headers are preserved on the render-pdf path."""
     resp = await _dispatch("/api/document/abc-123/render-pdf")

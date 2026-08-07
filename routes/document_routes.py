@@ -101,6 +101,38 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         except RuntimeError as exc:
             raise HTTPException(503, str(exc)) from exc
 
+    # ---- GET /api/document/{doc_id}/source-pdf ----
+    @router.get("/api/document/{doc_id}/source-pdf")
+    async def source_pdf(doc_id: str, request: Request):
+        """Serve the original PDF for the browser-native, view-only fallback.
+
+        The interactive overlay needs optional PyMuPDF.  A source preview keeps
+        PDFs readable when that renderer is intentionally not installed.
+        """
+        from fastapi.responses import FileResponse
+        from src.pdf_form_doc import find_source_upload_id
+
+        user = get_current_user(request)
+        db = SessionLocal()
+        try:
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if not doc:
+                raise HTTPException(404, "Document not found")
+            _verify_doc_owner(db, doc, user)
+            upload_id = find_source_upload_id(doc.current_content or "")
+            if not upload_id:
+                raise HTTPException(400, "Document is not linked to a source PDF")
+            pdf_path = _locate_current_user_upload(request, upload_id, user)
+            if not pdf_path:
+                raise HTTPException(404, "Source PDF not found")
+            return FileResponse(
+                pdf_path,
+                media_type="application/pdf",
+                headers={"Content-Disposition": "inline"},
+            )
+        finally:
+            db.close()
+
     # ---- POST /api/document ----
     @router.post("/api/document")
     async def create_document(request: Request, req: DocumentCreate) -> Dict[str, Any]:

@@ -362,6 +362,22 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       try { requestAnimationFrame(() => _wireArrowUpRecall(document.getElementById('message'))); } catch (_) {}
       setTimeout(() => _wireArrowUpRecall(document.getElementById('message')), 250);
     }
+
+    // Pressing "/" anywhere (outside a text field) focuses the composer so
+    // typing can start immediately — the "/" itself is not inserted; the
+    // slash-command menu still opens the normal way when "/" is typed into
+    // the focused input.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target;
+      if (target && target.closest && target.closest(
+        'input, textarea, select, [contenteditable="true"], [contenteditable=""]',
+      )) return;
+      const input = document.getElementById('message');
+      if (!input || input.disabled || input.matches(':focus')) return;
+      e.preventDefault();
+      input.focus();
+    });
   }
 
   // addMessage, createMsgFooter, displayMetrics, hideWelcomeScreen, showWelcomeScreen
@@ -961,6 +977,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
       const editorDisplay = messageInput.dataset.astercaeserDisplayMessage || '';
       delete messageInput.dataset.astercaeserDisplayMessage;
+      const editorChat = messageInput.dataset.astercaeserEditorChat === 'true';
+      delete messageInput.dataset.astercaeserEditorChat;
       const userDisplay = _displayOverride || editorDisplay || msg;
       _displayOverride = null;
       const skipBubble = _hideUserBubble;
@@ -1164,9 +1182,17 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       let _finalMsgWithInject = finalMsg;
       if (_inject.prefix) _finalMsgWithInject = _inject.prefix + ' ' + _finalMsgWithInject;
       if (_inject.suffix) _finalMsgWithInject = _finalMsgWithInject + ' ' + _inject.suffix;
+      // Tool-window context (terminal / web view / preview) attached by
+      // projectTools.js via a hidden dataset. Sent as a SEPARATE field so
+      // the server feeds it to the model without storing it in history —
+      // the composer, the user bubble, and the saved conversation stay clean.
+      const _toolCtx = messageInput.dataset.astercaeserToolContext;
+      if (_toolCtx) delete messageInput.dataset.astercaeserToolContext;
 
       const fd = new FormData();
       fd.append('message', _finalMsgWithInject);
+      if (_toolCtx) fd.append('tool_context', _toolCtx);
+      if (editorChat) fd.append('editor_chat', 'true');
       fd.append('session', streamSessionId);
       if (ids.length) fd.append('attachments', JSON.stringify(ids));
       // Auto-save & send active doc ID so the backend sees latest content
@@ -1496,6 +1522,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       let _lastToolName = '';
       const _searchIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="vertical-align:-2px;margin-right:4px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
       const _toolLabels = {
+        'get_workspace': 'Checking project',
+        'grep': 'Searching files',
+        'glob': 'Finding files',
+        'ls': 'Listing files',
         'web_search': 'Searching',
         'bash': 'Running',
         'python': 'Running',
@@ -1514,6 +1544,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         'save_memory': 'Remembering',
         'search_memory': 'Recalling',
         'manage_session': 'Organizing',
+        'manage_tasks': 'Updating tasks',
         'deep_research': 'Researching',
         'list_models': 'Browsing',
         'ui_control': 'Adjusting',
@@ -1521,6 +1552,38 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       const _toolIcons = {
         'web_search': _searchIcon,
       };
+      function _reportEditorAgentProgress(text, active = true) {
+        window.dispatchEvent(new CustomEvent('astercaeser:agent-progress', {
+          detail: { sessionId: streamSessionId, text, active },
+        }));
+      }
+      function _reportEditorAgentEvent(event) {
+        window.dispatchEvent(new CustomEvent('astercaeser:agent-event', {
+          detail: { sessionId: streamSessionId, ...event },
+        }));
+      }
+      // Keep agent tool traces available without letting a long investigation
+      // take over the whole conversation. The summary is one line by default;
+      // users can still open the complete trace when they need it.
+      function _setCompactThreadSummary(thread, label, state = 'working') {
+        if (!thread) return;
+        thread.classList.add('agent-thread--compact');
+        let summary = thread.querySelector(':scope > .agent-thread-summary');
+        if (!summary) {
+          summary = document.createElement('button');
+          summary.type = 'button';
+          summary.className = 'agent-thread-summary';
+          summary.addEventListener('click', () => {
+            const expanded = thread.classList.toggle('agent-thread--expanded');
+            summary.setAttribute('aria-expanded', String(expanded));
+          });
+          thread.prepend(summary);
+        }
+        const total = thread.querySelectorAll('.agent-thread-node').length;
+        const prefix = state === 'working' ? 'Working' : state === 'failed' ? 'Step failed' : 'Completed';
+        summary.textContent = `${prefix}: ${label || 'agent step'}${total > 1 ? ` (${total} steps)` : ''}`;
+        summary.setAttribute('aria-expanded', String(thread.classList.contains('agent-thread--expanded')));
+      }
       function _thinkingLabel() {
         if (!_lastToolName) {
           return 'Thinking';
@@ -1591,6 +1654,40 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         const time = seconds ? seconds + 's' : '';
         const tokens = tokenCount ? tokenCount + ' tok' : '';
         return time && tokens ? time + ' · ' + tokens : (time || tokens);
+      }
+
+      // Live-thinking box streaming. Rendering the FULL accumulated reasoning
+      // through mdToHtml (regex passes + KaTeX + emoji SVG) on every token is
+      // O(n²) and saturates the main thread, freezing the page while the model
+      // thinks. So live updates are throttled to one rAF and bounded to a
+      // trailing window; the complete text gets a single markdown render when
+      // thinking ends (see the `!hasUnclosedThink && isThinking` branch).
+      let _liveThinkRAF = 0;
+      let _liveThinkPendingText = '';
+      const _MAX_LIVE_THINK_CHARS = 6000;
+
+      function _extractLiveThinkText() {
+        return markdownModule.normalizeThinkingMarkup(_streamDisplayText(roundText))
+          .replace(/<\/?(?:think(?:ing)?|thought)(?:\s+[^>]*)?>/gi, '')
+          .replace(/<\|channel>thought\s*\n?/gi, '')
+          .replace(/<\|channel>response\s*\n?/gi, '')
+          .replace(/<channel\|>/gi, '')
+          .replace(/^\s*Thinking(?:\s+Process)?:\s*/i, '');
+      }
+
+      function _scheduleLiveThinkRender(text) {
+        _liveThinkPendingText = text;
+        if (_liveThinkRAF) return;
+        _liveThinkRAF = requestAnimationFrame(() => {
+          _liveThinkRAF = 0;
+          if (!_liveThinkInner || !_liveThinkInner.isConnected) return;
+          const t = _liveThinkPendingText || '';
+          _liveThinkPendingText = '';
+          const renderText = t.length > _MAX_LIVE_THINK_CHARS
+            ? t.slice(t.length - _MAX_LIVE_THINK_CHARS)
+            : t;
+          _liveThinkInner.innerHTML = markdownModule.mdToHtml(renderText);
+        });
       }
 
       function _replyAfterClosedThinking(text) {
@@ -1840,12 +1937,18 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                 if (!_isBg) {
                   _cancelThinkingTimer();
                   _replaceThinkingSpinner('Preparing agent');
+                  _reportEditorAgentProgress('Preparing agent…');
                 }
                 continue;
               }
               if (json.delta) {
                 _cancelThinkingTimer();
-                _removeThinkingSpinner();
+                // Reasoning-only deltas do not contain visible answer text.
+                // Keep the progress indicator until a visible answer or a
+                // tool event arrives; otherwise the assistant bubble appears
+                // empty while the model is still working.
+                if (!json.thinking) _removeThinkingSpinner();
+                if (!_isBg) _reportEditorAgentProgress(json.thinking ? 'Thinking…' : 'Writing answer…');
                 // Text arrived after tools — connect thread line to this bubble
                 const _threadAbove = roundHolder?.previousElementSibling;
                 if (_threadAbove && _threadAbove.classList.contains('agent-thread') && !_threadAbove.classList.contains('has-bottom')) {
@@ -1908,6 +2011,12 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                 // 3. Qwen3.5: "Thinking Process:" without <think> tags
                 const normalizedRoundText = markdownModule.normalizeThinkingMarkup(roundText);
                 let hasUnclosedThink = markdownModule.hasUnclosedThinkTag(normalizedRoundText);
+                // Some providers stream reasoning on a separate channel and
+                // mark the delta with `thinking: true` without emitting a
+                // literal <think> tag. Treat that metadata as authoritative;
+                // otherwise the UI briefly renders an empty streaming bubble
+                // while the agent is still working.
+                if (json.thinking) hasUnclosedThink = true;
                 // Detect non-tag thinking patterns: "Thinking:", "Thinking Process:", Gemma-style reasoning
                 // These patterns don't use <think> tags, so we simulate unclosed thinking during streaming
                 const _replyPrefixes = ['Hey', 'Hi ', 'Hi!', 'Hello', 'Sure', 'Yes', 'No ', 'No,', 'Yo', 'OK', 'Here', 'Absolutely', 'Of course', 'Great', 'Alright', 'Thanks', 'Welcome', 'Good ', "I'm happy", "I'd be"];
@@ -2013,14 +2122,9 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                 } else if (hasUnclosedThink && isThinking) {
                   if (_liveThinkInner) {
                     // Extract raw thinking text (strip known thinking wrappers and prefixes)
-                    var thinkText = markdownModule.normalizeThinkingMarkup(_streamDisplayText(roundText))
-                      .replace(/<\/?(?:think(?:ing)?|thought)(?:\s+[^>]*)?>/gi, '')
-                      .replace(/<\|channel>thought\s*\n?/gi, '')
-                      .replace(/<\|channel>response\s*\n?/gi, '')
-                      .replace(/<channel\|>/gi, '');
-                    thinkText = thinkText.replace(/^\s*Thinking(?:\s+Process)?:\s*/i, '');
+                    var thinkText = _extractLiveThinkText();
                     _liveThinkTokenCount = _estimateThinkingTokens(thinkText);
-                    _liveThinkInner.innerHTML = markdownModule.mdToHtml(thinkText);
+                    _scheduleLiveThinkRender(thinkText);
                     if (_liveThinkTimerEl) {
                       var _elapsedLive = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '';
                       _liveThinkTimerEl.textContent = _formatThinkStats(_elapsedLive, _liveThinkTokenCount);
@@ -2038,7 +2142,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                   continue;
                 } else if (!hasUnclosedThink && isThinking) {
                   isThinking = false;
-                  var _thinkTextLen = _liveThinkInner ? _liveThinkInner.textContent.trim().length : 0;
+                  var _thinkTextLen = _extractLiveThinkText().trim().length;
 
                   // If thinking was trivially short (< 20 chars), remove the section entirely
                   // Models sometimes emit <think>The</think> or similar noise
@@ -2058,6 +2162,14 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                     _renderStream();
                     _scheduleThinkingSpinner();
                     continue;
+                  }
+
+                  // Thinking ended — single full markdown render of the complete
+                  // reasoning text (live updates were throttled and tail-bounded).
+                  if (_liveThinkRAF) { cancelAnimationFrame(_liveThinkRAF); _liveThinkRAF = 0; }
+                  _liveThinkPendingText = '';
+                  if (_liveThinkInner && _liveThinkDomId) {
+                    _liveThinkInner.innerHTML = markdownModule.mdToHtml(_extractLiveThinkText());
                   }
 
                   // Thinking ended — smooth transition: update header, pause, then collapse
@@ -2478,6 +2590,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
               } else if (json.type === 'tool_start') {
                 if (_isBg) continue;
+                _reportEditorAgentEvent({
+                  type: 'tool_start', tool: json.tool, label: _toolLabels[json.tool?.toLowerCase()] || json.tool,
+                  path: json.path || '', round: json.round, status: 'running',
+                });
                 _cancelThinkingTimer();
                 _removeThinkingSpinner();
                 // Force-close thinking if still open — tools are real content, not thinking
@@ -2551,6 +2667,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                 threadWrap.classList.add('streaming');
                 lastToolThread = threadWrap;
                 const toolLabel = _toolLabels[json.tool.toLowerCase()] || json.tool;
+                _reportEditorAgentProgress(`Working: ${toolLabel}`);
+                // A new step returns the trace to its compact state. This keeps
+                // multi-step investigations from filling the normal chat.
+                threadWrap.classList.remove('agent-thread--expanded');
                 const toolIcon = _toolIcons[json.tool.toLowerCase()] || '\u25B6';
                 const node = document.createElement('div')
                 node.className = 'agent-thread-node running';
@@ -2558,6 +2678,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                 node.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${toolIcon}</span><span class="agent-thread-tool">${esc(toolLabel)}</span><span class="agent-thread-wave">▁▂▃</span></div><div class="agent-thread-content">${cmdHtml}</div>`;
                 // Expand/collapse via delegated click handler (init at module bottom).
                 threadWrap.appendChild(node);
+                _setCompactThreadSummary(threadWrap, toolLabel, 'working');
                 currentToolBubble = node;
                 // Animate the wave
                 const waveEl = node.querySelector('.agent-thread-wave');
@@ -2617,6 +2738,11 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
               } else if (json.type === 'tool_output') {
                 if (_isBg) continue;
+                _reportEditorAgentEvent({
+                  type: 'tool_output', tool: json.tool, label: _toolLabels[json.tool?.toLowerCase()] || json.tool,
+                  path: json.path || json.diff?.file || '', round: json.round,
+                  status: (json.exit_code === 0 || json.exit_code == null) ? 'done' : 'failed',
+                });
                 // --- Update the current thread node ---
                 if (currentToolBubble) {
                   // Stop wave animation + the per-second cooking ticker
@@ -2669,6 +2795,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                   const _wasOpen = currentToolBubble.classList.contains('open');
                   currentToolBubble.className = 'agent-thread-node' + (ok ? '' : ' error') + (_wasOpen ? ' open' : '');
                   currentToolBubble.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${ok ? '\u2713' : '\u2717'}</span><span class="agent-thread-tool">${esc(json.tool)}</span><span class="agent-thread-status">${ok ? 'done' : 'failed'}</span><span class="agent-thread-chevron">\u25B6</span></div><div class="agent-thread-content">${cmdHtml2}${outHtml}${diffHtml}</div>`;
+                  _setCompactThreadSummary(currentToolBubble.closest('.agent-thread'), json.tool, ok ? 'done' : 'failed');
                   // Reset so thinking spinner between tools says "Thinking" not the old tool's label
                   _lastToolName = '';
                   uiModule.scrollHistory();
@@ -2824,6 +2951,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
               } else if (json.type === 'agent_step') {
                 if (_isBg) continue;
+                _reportEditorAgentEvent({ type: 'agent_step', label: `Agent round ${json.round || ''}`.trim(), round: json.round, status: 'done' });
                 _cancelThinkingTimer();
                 _removeThinkingSpinner();
                 _renderStream();
@@ -3427,11 +3555,15 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         var _rToggleCleanup = document.getElementById('research-toggle-btn');
         if (_rToggleCleanup) _rToggleCleanup.classList.remove('research-running');
       }
+      _backgroundStreams.delete(streamSessionId);
 
-      // Only reset UI state if still on the stream's session and was never backgrounded
-      const _isBgFinally = (sessionModule.getCurrentSessionId() !== streamSessionId) || _backgroundStreams.has(streamSessionId);
+      const _isBgFinally = (sessionModule.getCurrentSessionId() !== streamSessionId);
 
       if (!_isBgFinally) {
+        // Best-effort: the editor-agent progress reporter is block-scoped in
+        // the streaming handler and NOT visible here in strict mode — a throw
+        // here would skip the input re-enable + refocus below.
+        try { _reportEditorAgentProgress('', false); } catch (_e) {}
         // Reset button to idle state
         updateSubmitButton('idle', submitBtn);
 
@@ -3956,10 +4088,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     }
 
     if (entry.status === 'running') {
-      // Stream is still active — show a clean spinner, poll until done,
-      // then reload history to show the final saved response.
       var box = document.getElementById('chat-history');
       if (!box) return;
+
+      if (box.querySelector('.msg-bg-stream-indicator')) return;
 
       // Replay any doc content that was streamed in the background
       if (entry._docTitle != null && documentModule) {
@@ -3970,7 +4102,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
 
       var holder = document.createElement('div');
-      holder.className = 'msg msg-ai';
+      holder.className = 'msg msg-ai msg-bg-stream-indicator';
       var meta = sessionModule.getSessions().find(function(s) { return s.id === sessionId; });
       var roleLabel = _shortModel(meta && meta.model);
       var roleTs = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});

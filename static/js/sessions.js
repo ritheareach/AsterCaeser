@@ -2615,8 +2615,28 @@ async function _checkServerStream(sessionId) {
     const bodyDiv = holder.querySelector('.body');
 
     const spinnerMod = await import('./spinner.js');
-    const spinner = spinnerMod.default.create('Generating response...', 'right');
+    const spinner = spinnerMod.default.create('Working...', 'right');
     bodyDiv.appendChild(spinner.createElement());
+    const activity = document.createElement('div');
+    activity.className = 'detached-agent-activity';
+    bodyDiv.appendChild(activity);
+    function renderActivity(info) {
+      const events = Array.isArray(info?.events) ? info.events : [];
+      events.forEach((event) => window.dispatchEvent(new CustomEvent('astercaeser:agent-event', {
+        detail: { sessionId, ...event },
+      })));
+      const phase = info?.phase ? String(info.phase).replace(/_/g, ' ') : 'working';
+      const round = info?.round ? ` · round ${info.round}` : '';
+      spinner.updateMessage(`${phase.charAt(0).toUpperCase() + phase.slice(1)}${round}`);
+      activity.innerHTML = `<div class="detached-agent-activity-title">AI activity · ${events.length} events</div>` +
+        events.slice(-24).map((ev) => {
+          const label = ev.path ? `${ev.type || 'event'} · ${ev.path}` : (ev.label || ev.tool || ev.type || 'event');
+          const status = ev.status || (ev.exit_code === 0 ? 'done' : '');
+          const mark = status === 'failed' ? '✕' : (status ? '✓' : '●');
+          return `<div class="detached-agent-event"><span class="detached-agent-event-dot">${mark}</span><span>${uiModule.esc(String(label))}</span><span class="detached-agent-event-status">${uiModule.esc(String(status || 'running'))}</span></div>`;
+        }).join('');
+    }
+    renderActivity(info);
     spinner.start();
     box.appendChild(holder);
     uiModule.scrollHistory();
@@ -2644,12 +2664,22 @@ async function _checkServerStream(sessionId) {
       }
       try {
         const r = await fetch(`${API_BASE}/api/chat/stream_status/${sessionId}`);
-        if (!r.ok || (await r.json()).status !== 'streaming') {
+        if (!r.ok) {
           clearInterval(pollId);
           spinner.destroy();
           if (holder.parentNode) holder.remove();
           // Reload session to show the completed response + docs
           selectSession(sessionId);
+          return;
+        }
+        const pollInfo = await r.json();
+        if (pollInfo.status !== 'streaming') {
+          clearInterval(pollId);
+          spinner.destroy();
+          if (holder.parentNode) holder.remove();
+          selectSession(sessionId);
+        } else {
+          renderActivity(pollInfo);
         }
       } catch (_) {
         clearInterval(pollId);

@@ -69,6 +69,25 @@ def _stream_set(session_id: str, **fields) -> None:
     rec.update(fields)
 
 
+def _stream_event(session_id: str, event: Dict[str, Any]) -> None:
+    """Keep a small, safe activity history for detached-stream recovery."""
+    rec = _active_streams.get(session_id)
+    if rec is None:
+        return
+    item = {k: event.get(k) for k in (
+        "type", "tool", "round", "path", "status", "label", "exit_code", "duration_ms",
+    ) if event.get(k) is not None}
+    diff = event.get("diff") if isinstance(event.get("diff"), dict) else {}
+    if diff.get("file"):
+        item["path"] = diff["file"]
+    if event.get("command"):
+        item["label"] = str(event["command"])[:160]
+    events = rec.setdefault("events", [])
+    events.append(item)
+    del events[:-80]
+    rec["last_event"] = item
+
+
 def _message_plain_text(content: Any) -> str:
     if isinstance(content, list):
         parts: List[str] = []
@@ -106,6 +125,80 @@ def _ensure_current_request_is_latest_user(messages: List[Dict[str, Any]], curre
     repaired = list(messages or [])
     repaired.append({"role": "user", "content": current})
     return repaired
+
+
+_WEBVIEW_CONTEXT_BLOCK_RE = re.compile(
+    r"\n*\[ASTERCAESER_WEBVIEW_CONTEXT\]\s*(.*?)\s*\[/ASTERCAESER_WEBVIEW_CONTEXT\]",
+    re.DOTALL,
+)
+_WEBVIEW_CONTEXT_MODEL_LIMIT = 16_000
+
+# Editor requests are generally follow-ups against the currently open file.
+# A long project conversation can contain many obsolete tool traces and old
+# answers that compete with the new request. Keep the system instructions and
+# a small recent tail for editor-originated turns; the current request is
+# re-checked/appended below so it can never be lost during compaction.
+_EDITOR_CONTEXT_TAIL_MESSAGES = 16
+_EDITOR_CONTEXT_MAX_CHARS = 48_000
+
+
+def _focus_editor_context(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not messages:
+        return messages
+    message_chars = sum(len(_message_plain_text(item.get("content"))) for item in messages)
+    if len(messages) <= _EDITOR_CONTEXT_TAIL_MESSAGES + 1 and message_chars <= _EDITOR_CONTEXT_MAX_CHARS:
+        return messages
+    system_messages = [item for item in messages if item.get("role") == "system"]
+    conversation = [item for item in messages if item.get("role") != "system"]
+    tail = conversation[-_EDITOR_CONTEXT_TAIL_MESSAGES:]
+    # Never start a request with an orphaned tool result/call. The matching
+    # user/assistant turn is more useful than a partial tool chain.
+    while tail and tail[0].get("role") in {"tool", "function"}:
+        tail.pop(0)
+    # A single tool result can itself be very large. Drop older tail entries
+    # until the focused request stays comfortably below typical context caps.
+    while len(tail) > 1 and sum(len(_message_plain_text(item.get("content"))) for item in tail) > _EDITOR_CONTEXT_MAX_CHARS:
+        tail.pop(0)
+    focused = system_messages + tail
+    logger.info(
+        "[chat_stream] focused editor context: %d -> %d messages",
+        len(messages), len(focused),
+    )
+    return focused
+
+
+def _bound_webview_context_for_model(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep browser-preview context helpful without exceeding provider limits.
+
+    Preview snapshots are client-provided and can be much larger than a normal
+    user message. Older snapshots are redundant after the conversation moves
+    on, so retain only a bounded copy on the most recent user turn.
+    """
+    last_user_index = max((i for i, item in enumerate(messages) if item.get("role") == "user"), default=-1)
+    bounded: List[Dict[str, Any]] = []
+    for index, item in enumerate(messages):
+        clone = dict(item)
+        content = clone.get("content")
+        if not isinstance(content, str) or "[ASTERCAESER_WEBVIEW_CONTEXT]" not in content:
+            bounded.append(clone)
+            continue
+
+        def replace_context(match: re.Match) -> str:
+            if index != last_user_index:
+                return ""
+            context = match.group(1).strip()
+            if len(context) <= _WEBVIEW_CONTEXT_MODEL_LIMIT:
+                return f"\n[ASTERCAESER_WEBVIEW_CONTEXT]\n{context}\n[/ASTERCAESER_WEBVIEW_CONTEXT]"
+            return (
+                "\n[ASTERCAESER_WEBVIEW_CONTEXT]\n"
+                f"{context[:_WEBVIEW_CONTEXT_MODEL_LIMIT]}\n"
+                "[Preview context truncated for request size]\n"
+                "[/ASTERCAESER_WEBVIEW_CONTEXT]"
+            )
+
+        clone["content"] = _WEBVIEW_CONTEXT_BLOCK_RE.sub(replace_context, content).strip()
+        bounded.append(clone)
+    return bounded
 
 
 _WEB_FOLLOWUP_RE = re.compile(
@@ -233,6 +326,12 @@ def _project_workspace_for_session(sess, owner: Optional[str]) -> str:
         return project.path if project.owner in (None, "__system__") else ""
     finally:
         db.close()
+
+
+def _resolve_owned_project_workspace(path: str) -> str:
+    """Vet a directory already authorized by the session's owned project."""
+    from src.tool_execution import vet_workspace
+    return vet_workspace(path) or ""
 
 
 def _session_url_matches_endpoint(session_url: str, endpoint_base: str) -> bool:
@@ -634,6 +733,12 @@ def setup_chat_routes(
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
         compare_mode = str(form_data.get("compare_mode", "")).lower() == "true"
         incognito = str(form_data.get("incognito", "")).lower() == "true"
+        editor_chat = str(form_data.get("editor_chat", "")).lower() in {"1", "true", "yes"}
+        # Tool-window context (terminal / web view / preview) sent by
+        # projectTools.js as a SEPARATE field so it reaches the model prompt
+        # without being persisted into the session history (the stored user
+        # message stays exactly what the user typed).
+        tool_context = (form_data.get("tool_context") or "").strip()[:60000]
         # Plan mode is not part of the merge-ready UI. Ignore stale clients or
         # manual form posts that still send plan_mode=true.
         plan_mode = False
@@ -642,6 +747,7 @@ def setup_chat_routes(
         workspace, workspace_rejected = _resolve_request_workspace(
             request, form_data.get("workspace")
         )
+        project_file_access = False
         # Plan mode is a modifier on agent mode — it only makes sense with tools.
         if plan_mode:
             chat_mode = "agent"
@@ -758,16 +864,17 @@ def setup_chat_routes(
             sess = session_manager.get_session(session)
             owner = effective_user(request)
             _bind_unscoped_session_to_project(sess, requested_project_id, owner)
-            # A project-bound chat carries an explicit filesystem authority:
-            # bind its own saved directory as the per-turn workspace. The
-            # normal workspace validator still applies, including its admin
-            # gate and sensitive-path checks, so a project label cannot widen
-            # access beyond its approved directory.
-            if not workspace:
-                project_workspace = _project_workspace_for_session(sess, owner)
-                if project_workspace:
-                    workspace, project_workspace_rejected = _resolve_request_workspace(request, project_workspace)
-                    workspace_rejected = workspace_rejected or project_workspace_rejected
+            # A project-bound chat receives filesystem authority only for the
+            # directory on its owner-checked Project row. This intentionally
+            # takes precedence over a client-posted workspace path, which is
+            # still admin-only because it may name any host directory.
+            project_workspace = _project_workspace_for_session(sess, owner)
+            if project_workspace:
+                workspace = _resolve_owned_project_workspace(project_workspace)
+                if workspace:
+                    project_file_access = True
+                else:
+                    workspace_rejected = workspace_rejected or project_workspace
             if _clear_orphaned_session_endpoint(sess, owner=owner):
                 raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
             # Issue #587: picker shows a model from the endpoint cache but
@@ -1041,6 +1148,12 @@ def setup_chat_routes(
             if not _privs.get("can_use_agent", True):
                 _effective_mode = 'chat'
                 chat_mode = 'chat'
+        if project_file_access:
+            # Project ownership grants confined file tools plus Git-only shell
+            # access. The executor rejects every non-Git shell command.
+            disabled_tools.difference_update({
+                "read_file", "write_file", "edit_file", "grep", "glob", "ls", "get_workspace", "bash",
+            })
         # Global admin disabled tools
         from src.settings import get_setting
         _global_disabled = get_setting("disabled_tools", [])
@@ -1057,7 +1170,9 @@ def setup_chat_routes(
                 # File requests use the confined file tools. Keep arbitrary
                 # shell and Python off, but allow the agent to read/create/edit
                 # inside the active project workspace.
-                disabled_tools.update({"bash", "python", "builtin_browser"})
+                disabled_tools.update({"python", "builtin_browser"})
+                if not project_file_access:
+                    disabled_tools.add("bash")
             else:
                 disabled_tools.update({
                     "bash", "python", "read_file", "write_file", "builtin_browser",
@@ -1114,7 +1229,11 @@ def setup_chat_routes(
             web_sources = ctx.web_sources
 
             # Register active stream for partial-save safety net
-            _active_streams[session] = {"status": "streaming", "partial": "", "query": message, "is_research": effective_do_research, "mode": _effective_mode}
+            _active_streams[session] = {
+                "status": "streaming", "partial": "", "query": message,
+                "is_research": effective_do_research, "mode": _effective_mode,
+                "round": 0, "phase": "starting", "events": [],
+            }
 
             # The client sent a workspace the server refused to bind (deleted
             # folder, file path, sensitive dir, filesystem root). Tell it up
@@ -1265,7 +1384,18 @@ def setup_chat_routes(
                     _active_streams.pop(session, None)
                     return
 
+            if editor_chat:
+                ctx.messages = _focus_editor_context(ctx.messages)
             messages = _ensure_current_request_is_latest_user(ctx.messages, message)
+            if tool_context:
+                # Attach the tool context to the CURRENT user turn for the
+                # model only — the stored history keeps the clean message, so
+                # the context never reappears after a page refresh.
+                for _item in reversed(messages):
+                    if _item.get("role") == "user":
+                        _item["content"] = f"{_item['content']}\n\n{tool_context}"
+                        break
+            messages = _bound_webview_context_for_model(messages)
 
             # Auto-compact notification
             if ctx.was_compacted:
@@ -1366,9 +1496,10 @@ def setup_chat_routes(
                                     # reply (mirrors the rewrite path below).
                                     if data.get("thinking"):
                                         thinking_response += data["delta"]
+                                        _stream_set(session, phase="thinking")
                                     else:
                                         full_response += data["delta"]
-                                        _stream_set(session, partial=full_response)
+                                        _stream_set(session, partial=full_response, phase="answering")
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.
@@ -1505,7 +1636,16 @@ def setup_chat_routes(
                     _forced_tools = None
                     if _search_enabled:
                         _forced_tools = set(WEB_TOOL_NAMES)
-                    if _tool_intent and _tool_intent.category == "files" and workspace:
+                    # A verified project chat is an explicit coding workspace.
+                    # Do not rely on the lightweight intent classifier to guess
+                    # that a request such as "implement RBAC" needs file tools:
+                    # otherwise an open document/PDF can leave the agent with
+                    # read-only-looking tools despite an owned project bridge.
+                    if project_file_access and workspace:
+                        _forced_tools = (_forced_tools or set()) | {
+                            "read_file", "write_file", "edit_file", "grep", "glob", "ls", "get_workspace", "bash",
+                        }
+                    elif _tool_intent and _tool_intent.category == "files" and workspace:
                         _forced_tools = (_forced_tools or set()) | {
                             "read_file", "write_file", "edit_file", "ls", "get_workspace",
                         }
@@ -1531,6 +1671,7 @@ def setup_chat_routes(
                         plan_mode=plan_mode,
                         approved_plan=approved_plan or None,
                         workspace=workspace or None,
+                        project_file_access=project_file_access,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
                     ):
@@ -1562,8 +1703,18 @@ def setup_chat_routes(
                                 ):
                                     if data.get("type") == "agent_step":
                                         _agent_rounds = max(_agent_rounds, data.get("round", 1))
+                                        _stream_set(session, round=_agent_rounds, phase="working")
+                                        _stream_event(session, data)
                                     elif data.get("type") == "tool_start":
                                         _agent_tool_calls += 1
+                                        _stream_set(session, round=data.get("round", _agent_rounds), phase="tool")
+                                        _stream_event(session, data)
+                                    elif data.get("type") == "tool_output":
+                                        _stream_set(session, phase="working")
+                                        _stream_event(session, data)
+                                    elif data.get("type") in {"doc_stream_open", "doc_update"}:
+                                        _stream_set(session, phase="document")
+                                        _stream_event(session, data)
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.

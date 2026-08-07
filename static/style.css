@@ -127,16 +127,16 @@ pre, code, .hljs {
 /* Scrollbar styling */
 @supports selector(::-webkit-scrollbar) {
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 4px;
+    height: 4px;
   }
   ::-webkit-scrollbar-track {
-    background: var(--panel);
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
     background-color: var(--red);
-    border-radius: 4px;
-    border: 2px solid var(--panel);
+    border-radius: 2px;
+    border: 1px solid var(--panel);
   }
   ::-webkit-scrollbar-thumb:hover {
     background-color: color-mix(in srgb, var(--red) 80%, white);
@@ -41872,56 +41872,72 @@ body.theme-frosted .modal {
    separate editor theme.  Code itself remains monospaced; controls inherit
    the user's selected application font, density and scale. */
 #code-editor-root {
-  --ce-surface: color-mix(in srgb, var(--panel) 92%, var(--bg));
-  --ce-subtle: color-mix(in srgb, var(--fg) 64%, var(--bg));
-  --ce-hover: color-mix(in srgb, var(--accent, var(--red)) 11%, var(--panel));
-  --ce-active: color-mix(in srgb, var(--accent, var(--red)) 18%, var(--panel));
-  background: var(--bg);
+  --ce-surface: color-mix(in srgb, var(--panel) 30%, transparent);
+  --ce-subtle: color-mix(in srgb, var(--fg) 70%, transparent);
+  --ce-hover: color-mix(in srgb, var(--accent, #00f0ff) 15%, transparent);
+  --ce-active: color-mix(in srgb, var(--accent, #00f0ff) 25%, transparent);
+  --ce-border: color-mix(in srgb, var(--accent, #00f0ff) 40%, transparent);
+  background: color-mix(in srgb, var(--bg) 80%, rgba(15, 15, 20, 0.9));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   color: var(--fg);
   font-family: inherit;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  box-shadow: 0 10px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+  overflow: hidden;
 }
 
 #code-editor-root .code-editor-toolbar {
   min-height: 44px;
   height: auto;
   gap: 8px;
-  padding: 5px 10px;
-  background: var(--ce-surface);
+  padding: 5px 12px;
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
 #code-editor-root .code-editor-tabs { align-self: stretch; gap: 4px; padding: 0; }
-#code-editor-root .code-editor-breadcrumb { min-width: 0; flex: 1 1 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ce-subtle); font: 11px var(--font-mono, monospace); opacity: .8; }
+#code-editor-root .code-editor-breadcrumb { min-width: 0; flex: 1 1 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ce-subtle); font: 12px var(--font-mono, monospace); opacity: .8; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
 #code-editor-root .code-editor-tab {
   align-self: stretch;
   gap: 6px;
   margin: 0;
-  padding: 0 10px;
+  padding: 0 14px;
   border: 0;
   border-bottom: 2px solid transparent;
-  border-radius: 0;
+  border-radius: 6px 6px 0 0;
   background: transparent;
   color: var(--ce-subtle);
   font: 500 12px inherit;
+  transition: all 0.2s ease;
 }
 #code-editor-root .code-editor-tab:hover { background: var(--ce-hover); color: var(--fg); }
-#code-editor-root .code-editor-tab.active { background: color-mix(in srgb, var(--panel) 84%, var(--bg)); color: var(--fg); border-bottom-color: var(--accent, var(--red)); }
-#code-editor-root .code-editor-tab.dirty .ce-tab-name::after { color: var(--accent, var(--red)); margin-left: 4px; }
-#code-editor-root .ce-tab-close { padding: 2px 4px; border-radius: 4px; font-size: 11px; opacity: .58; }
+#code-editor-root .code-editor-tab.active { 
+  background: var(--ce-active); 
+  color: var(--fg); 
+  border-bottom-color: var(--accent, #00f0ff);
+  box-shadow: inset 0 -20px 20px -20px var(--ce-hover);
+}
+#code-editor-root .code-editor-tab.dirty .ce-tab-name::after { color: var(--accent, #00f0ff); margin-left: 4px; content: '•'; text-shadow: 0 0 5px var(--accent, #00f0ff); }
+#code-editor-root .ce-tab-close { padding: 2px 4px; border-radius: 4px; font-size: 11px; opacity: .58; transition: opacity 0.2s; }
+#code-editor-root .ce-tab-close:hover { opacity: 1; color: #ff4a4a; background: rgba(255,74,74,0.1); }
 
-#code-editor-root .code-editor-actions { gap: 4px; padding: 0; flex-wrap: wrap; justify-content: flex-end; }
+#code-editor-root .code-editor-actions { gap: 6px; padding: 0; flex-wrap: wrap; justify-content: flex-end; }
 #code-editor-root .code-editor-action-btn,
 #code-editor-root .ce-panel-tab,
 #code-editor-root .editor-preview-action {
   min-height: 30px;
-  padding: 5px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 40%, transparent);
   color: var(--ce-subtle);
   font: 500 11px inherit;
-  letter-spacing: 0;
-  opacity: 1;
-  text-transform: none;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(4px);
 }
 #code-editor-root .code-editor-action-btn:hover,
 #code-editor-root .code-editor-action-btn:focus-visible,
@@ -41929,55 +41945,99 @@ body.theme-frosted .modal {
 #code-editor-root .ce-panel-tab:focus-visible,
 #code-editor-root .editor-preview-action:hover:not(:disabled),
 #code-editor-root .editor-preview-action:focus-visible {
-  border-color: color-mix(in srgb, var(--border) 70%, var(--fg));
+  border-color: var(--ce-border);
   background: var(--ce-hover);
   color: var(--fg);
   outline: none;
+  box-shadow: 0 0 10px var(--ce-hover);
 }
-#code-editor-root .code-editor-action-btn[aria-pressed="true"] { background: var(--ce-active); color: var(--fg); }
-#code-editor-root .code-editor-action-btn:disabled { cursor: not-allowed; opacity: .38; }
+#code-editor-root .code-editor-action-btn[aria-pressed="true"] { 
+  background: var(--ce-active); 
+  color: var(--fg); 
+  border-color: var(--accent, #00f0ff);
+  box-shadow: 0 0 15px var(--ce-active);
+}
+#code-editor-root .code-editor-action-btn:disabled { cursor: not-allowed; opacity: .38; box-shadow: none; border-color: transparent; }
 
 #code-editor-root .code-editor-sidebar {
   width: 252px;
-  background: var(--ce-surface);
-  transition: width 160ms ease, border-color 160ms ease, opacity 120ms ease;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  transition: width 160ms ease, opacity 120ms ease;
 }
 #code-editor-root .code-editor-sidebar-header {
   min-height: 39px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   color: var(--ce-subtle);
-  font: 600 11px inherit;
-  letter-spacing: .02em;
-  text-transform: none;
+  font: 700 11px inherit;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
 }
-#code-editor-root .code-editor-file-tree { padding: 6px; font-family: inherit; }
-#code-editor-root .file-tree-item { min-height: 28px; gap: 6px; padding: 4px 6px; border-radius: 5px; color: var(--ce-subtle); font-family: inherit; }
-#code-editor-root .file-tree-item:hover { background: var(--ce-hover); color: var(--fg); }
-#code-editor-root .file-tree-item.selected { background: var(--ce-active); color: var(--fg); }
-#code-editor-root .file-tree-name { font-size: 12px; }
+#code-editor-root .code-editor-file-tree { padding: 8px; font-family: inherit; }
+#code-editor-root .file-tree-item { min-height: 30px; gap: 8px; padding: 5px 8px; border-radius: 6px; color: var(--ce-subtle); font-family: inherit; transition: all 0.15s ease; }
+#code-editor-root .file-tree-item:hover { background: var(--ce-hover); color: var(--fg); transform: translateX(2px); }
+#code-editor-root .file-tree-item.selected { 
+  background: var(--ce-active); 
+  color: var(--fg); 
+  border-left: 3px solid var(--accent, #00f0ff);
+  padding-left: 5px;
+}
+#code-editor-root .file-tree-name { font-size: 13px; font-weight: 500; }
 #code-editor-root.code-editor-tree-hidden .code-editor-sidebar { width: 0; border-right-color: transparent; opacity: 0; pointer-events: none; }
 #code-editor-root.code-editor-tree-hidden .code-editor-sidebar > * { visibility: hidden; }
 
-#code-editor-root .code-editor-textarea-wrap { background: var(--bg); }
-#code-editor-root .cm-editor .cm-scroller { font-family: var(--font-mono, "Fira Code", ui-monospace, monospace); }
+#code-editor-root .code-editor-textarea-wrap { background: transparent; }
+#code-editor-root .cm-editor .cm-scroller { font-family: var(--font-mono, "Fira Code", ui-monospace, monospace); font-size: 13px; line-height: 1.6; }
 #code-editor-root .code-editor-statusbar {
-  min-height: 31px;
-  gap: 14px;
-  padding: 5px 12px;
-  background: var(--ce-surface);
+  min-height: 34px;
+  gap: 16px;
+  padding: 6px 14px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
   color: var(--ce-subtle);
-  font: 11px inherit;
+  font: 12px inherit;
 }
 #code-editor-root .code-editor-statusbar span { opacity: 1; }
 
 #code-editor-root .code-editor-panels {
-  height: clamp(164px, 24vh, 260px);
-  background: var(--ce-surface);
-  transition: height 160ms ease, border-color 160ms ease;
+  position: absolute;
+  top: calc(100% - 550px - 30px);
+  left: calc(100% - 900px - 30px);
+  width: 900px;
+  height: 550px;
+  min-width: 600px;
+  min-height: 350px;
+  max-width: 95vw;
+  max-height: 90vh;
+  z-index: 100;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 80%, rgba(15, 15, 20, 0.95));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, var(--accent, #00f0ff) 40%, transparent);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5), 0 0 20px rgba(0, 240, 255, 0.1), inset 0 1px 0 rgba(255,255,255,0.05);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  transition: opacity 160ms ease, transform 160ms ease;
 }
-#code-editor-root.code-editor-tools-hidden .code-editor-panels { display: none; }
-#code-editor-root .code-editor-panel-tabs { gap: 4px; min-height: 39px; padding: 4px 8px; }
-#code-editor-root .ce-panel-tab { min-height: 29px; padding: 4px 9px; }
+#code-editor-root .code-editor-panel-tabs {
+  cursor: grab;
+  user-select: none;
+}
+#code-editor-root .code-editor-panel-tabs:active {
+  cursor: grabbing;
+}
+#code-editor-root.code-editor-tools-hidden .code-editor-panels { 
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px) scale(0.98);
+}
+#code-editor-root .code-editor-panel-tabs { gap: 4px; min-height: 39px; padding: 4px 8px; cursor: grab; user-select: none; }
+#code-editor-root .code-editor-panel-tabs:active { cursor: grabbing; }
+#code-editor-root .ce-panel-tab { min-height: 29px; padding: 4px 9px; cursor: pointer; }
 #code-editor-root .ce-panel-tab.active { background: var(--ce-active); color: var(--fg); border-bottom-color: transparent; }
 #code-editor-root .code-editor-panel-content { padding: 8px 10px; font-family: inherit; }
 #code-editor-root #ce-terminal-host { background: color-mix(in srgb, var(--bg) 96%, var(--panel)); }
@@ -42086,4 +42146,778 @@ body.theme-frosted .modal {
 
 @media (max-width: 768px) {
   #code-editor-root .editor-preview-resize-handle { display: none; }
+}
+
+/* --------------------------------------------------------------------------
+   STEPS & THINKING BLOCKS (Terminal / CLI Style)
+   -------------------------------------------------------------------------- */
+.agent-thread {
+  display: block !important;
+  margin: 12px 0 !important;
+}
+
+/* Hide vertical connector lines */
+.agent-thread::before,
+.agent-thread::after {
+  display: none !important;
+}
+
+/* Each step is a full-width line with no background */
+.agent-thread-node {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 4px 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  font-family: var(--font-mono, 'Menlo', monospace) !important;
+  font-size: 13px !important;
+  color: #ffffff !important;
+  cursor: default !important;
+}
+
+/* When expanded, allow the node to stack vertically so tool outputs fit */
+.agent-thread--expanded .agent-thread-node {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  padding: 8px 0 !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent) !important;
+}
+
+/* The header container flows inline */
+.agent-thread-header {
+  display: flex !important;
+  align-items: baseline !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+/* Hide AsterCaeser's native dot, chevron, status, and wave */
+.agent-thread-dot,
+.agent-thread-chevron,
+.agent-thread-status,
+.agent-thread-elapsed,
+.agent-thread-wave {
+  display: none !important;
+}
+
+/* Force the icon to be a green dot */
+.agent-thread-icon {
+  visibility: hidden !important; 
+  position: relative !important;
+  width: 14px !important;
+  height: 14px !important;
+  margin-right: 8px !important;
+  display: inline-block !important;
+}
+.agent-thread-icon::after {
+  content: "●" !important;
+  visibility: visible !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  color: #00ff00 !important; /* Lime green dot */
+  font-size: 14px !important;
+  line-height: 1 !important;
+}
+
+/* Red dot for errors */
+.agent-thread-node.error .agent-thread-icon::after {
+  color: #ff3333 !important;
+}
+
+/* Tool name (e.g. Search) in lime green */
+.agent-thread-tool {
+  color: #98c379 !important; /* Subtle terminal green */
+  font-weight: bold !important;
+}
+.agent-thread-node.error .agent-thread-tool {
+  color: #e06c75 !important; /* Terminal red */
+}
+
+/* Display the command/action on the same line */
+.agent-thread-content {
+  display: inline-block !important;
+  margin-left: 0 !important;
+}
+
+.agent-thread-cmd {
+  display: inline !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  color: #abb2bf !important; /* Terminal light gray */
+  white-space: nowrap !important;
+}
+
+/* Wrap the command in parentheses using pseudo-elements */
+.agent-thread-cmd::before {
+  content: "(" !important;
+}
+.agent-thread-cmd::after {
+  content: ")" !important;
+}
+
+/* Hide the actual output, only keep the cmd visible */
+.agent-tool-output {
+  display: none !important;
+}
+
+/* When the thread is expanded, reveal the tool outputs (like editor diffs) */
+.agent-thread--expanded .agent-tool-output {
+  display: block !important;
+  margin-top: 8px !important;
+  margin-left: 22px !important; /* Align with tool name */
+  font-family: var(--font-mono, 'Menlo', monospace) !important;
+}
+
+/* Fix colors inside the diffs so they are readable in terminal style */
+.agent-thread--expanded .agent-tool-output pre {
+  background: color-mix(in srgb, var(--panel) 50%, transparent) !important;
+  border: 1px solid var(--border) !important;
+  padding: 12px !important;
+  border-radius: 6px !important;
+  color: #e2e8f0 !important;
+}
+
+/* --- SUMMARY BLOCKS --- */
+.agent-thread-summary {
+  display: flex !important;
+  align-items: baseline !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 4px 0 !important;
+  margin: 0 !important;
+  font-family: var(--font-mono, 'Menlo', monospace) !important;
+  font-size: 13px !important;
+  color: #98c379 !important;
+  font-weight: bold !important;
+  cursor: pointer !important;
+}
+.agent-thread-summary::before {
+  content: "▶" !important;
+  color: #00ff00 !important;
+  font-size: 10px !important;
+  margin-right: 8px !important;
+}
+.agent-thread--expanded > .agent-thread-summary::before {
+  content: "▼" !important;
+}
+
+/* Hide nodes when compact, show when expanded */
+.agent-thread--compact:not(.agent-thread--expanded) .agent-thread-node {
+  display: none !important;
+}
+.agent-thread--compact.agent-thread--expanded .agent-thread-node {
+  display: flex !important;
+}
+
+/* --- DEEPSEEK THINKING BLOCKS --- */
+.thinking-section {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 4px 0 !important;
+  margin: 0 !important;
+  font-family: var(--font-mono, 'Menlo', monospace) !important;
+  font-size: 13px !important;
+  box-shadow: none !important;
+}
+.thinking-header {
+  display: flex !important;
+  align-items: baseline !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  color: #98c379 !important;
+  font-weight: bold !important;
+}
+.thinking-header-left::before {
+  content: "●" !important;
+  color: #00ff00 !important;
+  font-size: 14px !important;
+  margin-right: 8px !important;
+}
+.thinking-header > div:nth-child(2),
+.thinking-toggle {
+  display: none !important;
+}
+.thinking-content {
+  display: none !important;
+}
+
+/* --------------------------------------------------------------------------
+   INTERMEDIATE PROGRESS UPDATES (AI "Thinking Out Loud")
+   -------------------------------------------------------------------------- */
+/* Target any AI message that is followed by a tool execution or another AI message */
+.msg-ai:has(+ .agent-thread),
+.msg-ai:has(+ .msg-ai) {
+  opacity: 0.6 !important;
+  font-size: 12px !important;
+  font-style: italic !important;
+  margin: 4px 0 4px 28px !important;
+  padding: 4px 12px !important;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 50%, transparent) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* Hide the avatar and name on intermediate messages */
+.msg-ai:has(+ .agent-thread) .avatar,
+.msg-ai:has(+ .msg-ai) .avatar,
+.msg-ai:has(+ .agent-thread) .msg-header,
+.msg-ai:has(+ .msg-ai) .msg-header {
+  display: none !important;
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────
+   Code editor as a floating window
+   The editor is now a draggable / resizable / dockable window. The
+   windowbar is the drag handle; drag to the left/right edge to dock the
+   editor beside the chat (block-by-block layout); F11 / ⛶ toggles
+   fullscreen; `_` minimizes it to the dock chip.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.code-editor-windowbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 8px 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  user-select: none;
+}
+
+.code-editor-window-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.code-editor-window-title .ce-window-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #00f0ff);
+  box-shadow: 0 0 8px var(--accent, #00f0ff);
+  flex-shrink: 0;
+}
+
+.code-editor-window-name {
+  font: 600 12px inherit;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.code-editor-window-path {
+  font: 10px var(--font-mono, monospace);
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-editor-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.code-editor-window-controls .code-editor-action-btn {
+  padding: 4px 6px;
+  font-size: 11px;
+  border-radius: 5px;
+  line-height: 1.2;
+}
+
+.code-editor-window-controls .code-editor-action-btn svg {
+  display: block;
+}
+
+/* Windowed (floating) mode — overrides the fullscreen inset:0 shell. */
+.code-editor-root:not(.code-editor-fullscreen) {
+  right: auto;
+  bottom: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  z-index: 270;
+}
+
+.code-editor-root:not(.code-editor-fullscreen) .code-editor-windowbar {
+  border-radius: 9px 9px 0 0;
+}
+
+/* Docked left/right: square off against the viewport edge. */
+.code-editor-root.modal-right-docked,
+.code-editor-root.modal-left-docked {
+  border-radius: 0 !important;
+  border: none;
+  box-shadow: none;
+  z-index: 260;
+}
+
+.code-editor-root.modal-right-docked .code-editor-windowbar,
+.code-editor-root.modal-left-docked .code-editor-windowbar {
+  border-radius: 0;
+  cursor: grab;
+}
+
+.code-editor-root.modal-right-docked .code-editor-windowbar:active,
+.code-editor-root.modal-left-docked .code-editor-windowbar:active {
+  cursor: grabbing;
+}
+
+/* modalManager hides via .hidden — must beat the inline display:flex. */
+.code-editor-root.hidden {
+  display: none !important;
+}
+
+.code-editor-root.modal-minimized {
+  pointer-events: none;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   Project tool windows — Terminal / Preview / Web view
+   Standalone windows launched from the sidebar & icon rail. They share the
+   code editor's window chrome (windowbar) and the standard .modal window
+   machinery: drag, resize, edge dock, tile snap, minimize-to-chip.
+   ──────────────────────────────────────────────────────────────────────── */
+
+.pt-window .pt-window-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pt-windowbar {
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pt-window-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.pt-window.modal-right-docked .modal-content,
+.pt-window.modal-left-docked .modal-content {
+  border-radius: 0 !important;
+  border: none;
+  box-shadow: none;
+}
+
+.pt-window.modal-right-docked .pt-windowbar,
+.pt-window.modal-left-docked .pt-windowbar {
+  border-radius: 0;
+  cursor: grab;
+}
+
+.pt-window.modal-right-docked .pt-windowbar:active,
+.pt-window.modal-left-docked .pt-windowbar:active {
+  cursor: grabbing;
+}
+
+/* Empty state (no project context) */
+.pt-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg);
+  z-index: 2;
+}
+
+.pt-empty[hidden] {
+  display: none;
+}
+
+.pt-empty p {
+  max-width: 360px;
+  margin: 0;
+  font: 12px/1.6 inherit;
+  color: color-mix(in srgb, var(--fg) 65%, var(--bg));
+}
+
+.pt-empty-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  font: 600 11px inherit;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.pt-empty-btn:hover {
+  border-color: var(--accent, #56c7d9);
+  background: color-mix(in srgb, var(--accent, #56c7d9) 12%, var(--panel));
+}
+
+/* Terminal window */
+.pt-terminal-layout {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+}
+
+.pt-terminal-host {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  position: relative;
+  background: color-mix(in srgb, var(--bg) 96%, var(--panel));
+}
+
+.pt-terminal-session-container {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.pt-terminal-session-container > div {
+  height: 100%;
+}
+
+.pt-terminal-sidebar {
+  width: 160px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.pt-terminal-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  height: 32px;
+  box-sizing: border-box;
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pt-terminal-sidebar-header button {
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  opacity: 0.7;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.pt-terminal-sidebar-header button:hover {
+  opacity: 1;
+}
+
+.pt-terminal-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.pt-terminal-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 2px 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg);
+  opacity: 0.8;
+  font: 11px inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.pt-terminal-session:hover {
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  opacity: 1;
+}
+
+.pt-terminal-session.active {
+  background: color-mix(in srgb, var(--accent, #56c7d9) 15%, var(--panel));
+  color: var(--accent, #56c7d9);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.pt-terminal-session-close {
+  font-size: 9px;
+  opacity: 0.45;
+  flex-shrink: 0;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+.pt-terminal-session-close:hover {
+  opacity: 1;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+
+/* Preview panel inside the project-tool windows — mirrors the editor's
+   scoped .editor-preview-* rules (style.css `#code-editor-root .editor-…`). */
+.pt-window .editor-preview-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+  border: 0;
+}
+
+.pt-window .editor-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 10px;
+  background: var(--ce-surface, var(--panel));
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pt-window .editor-preview-title {
+  color: var(--fg);
+  font: 600 12px inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pt-window .editor-preview-status {
+  color: var(--ce-subtle, color-mix(in srgb, var(--fg) 55%, var(--bg)));
+  font: 11px inherit;
+}
+
+.pt-window .editor-preview-url {
+  flex: 1;
+  min-width: 120px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 11px var(--font-mono, monospace);
+  outline: none;
+}
+
+.pt-window .editor-preview-url:focus {
+  border-color: var(--accent, #56c7d9);
+}
+
+.pt-window .editor-preview-action {
+  color: var(--ce-subtle, color-mix(in srgb, var(--fg) 55%, var(--bg)));
+}
+
+.pt-window .editor-preview-close {
+  color: var(--red);
+}
+
+.pt-window .editor-preview-content {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  overflow: auto;
+  font-family: inherit;
+}
+
+.pt-window .editor-markdown-preview {
+  max-width: 780px;
+  color: color-mix(in srgb, var(--fg) 88%, var(--bg));
+}
+
+.pt-window .editor-markdown-preview h1,
+.pt-window .editor-markdown-preview h2,
+.pt-window .editor-markdown-preview h3,
+.pt-window .editor-markdown-preview h4,
+.pt-window .editor-markdown-preview h5,
+.pt-window .editor-markdown-preview h6 {
+  color: var(--fg);
+}
+
+.pt-window .editor-markdown-inline-code,
+.pt-window .editor-markdown-code-block {
+  border-radius: 6px;
+  background: var(--ce-surface, var(--panel));
+}
+
+.pt-window .editor-markdown-code-block {
+  border-left-color: var(--accent, #56c7d9);
+}
+
+.pt-window .editor-markdown-code-block code {
+  font-family: var(--font-mono, "Fira Code", monospace);
+}
+
+.pt-window .editor-markdown-rule {
+  height: 1px;
+  margin: 1.35em 0;
+  border: 0;
+  background: var(--border);
+}
+
+.pt-window .editor-markdown-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  list-style: none;
+  margin-left: -1.25em;
+}
+
+.pt-window .editor-markdown-task input {
+  margin: 0.25em 0 0;
+  accent-color: var(--accent, #56c7d9);
+}
+
+.pt-window .editor-preview-state {
+  border-radius: 7px;
+  border-left-color: var(--accent, #56c7d9);
+}
+
+.pt-window .editor-web-preview-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pt-window .editor-web-preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.pt-window .editor-preview-state[data-state="error"],
+.pt-window .editor-preview-state.error {
+  border-left-color: var(--red);
+}
+
+@media (max-width: 768px) {
+  .pt-window .pt-terminal-sidebar {
+    width: 132px;
+  }
+}
+
+/* Web view 16:9 scaler — the fixed 1280x720 viewport lives in a transform-
+   scaled wrapper so the iframe keeps 1:1 hit-testing. */
+.pt-window .editor-web-preview-scaler {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Web view toolbar — pick element / copy / attach to chat */
+.pt-webview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-wrap: wrap;
+}
+
+.pt-webview-toolbar .code-editor-action-btn {
+  padding: 4px 8px;
+  font-size: 10px;
+  border-radius: 5px;
+}
+
+.pt-webview-toolbar .code-editor-action-btn.is-picking {
+  border: 1px solid var(--accent, #56c7d9);
+  color: var(--accent, #56c7d9);
+}
+
+.pt-webview-status {
+  flex: 1;
+  min-width: 120px;
+  font: 10px var(--font-mono, monospace);
+  color: color-mix(in srgb, var(--fg) 60%, var(--bg));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pt-webview-attached {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--green, #98c379) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green, #98c379) 12%, transparent);
+  color: var(--green, #98c379);
+  font: 10px inherit;
+}
+
+.pt-webview-attached[hidden] {
+  display: none;
+}
+
+.pt-webview-attached button {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0.7;
+  font-size: 10px;
+}
+
+.pt-webview-attached button:hover {
+  opacity: 1;
 }

@@ -269,10 +269,19 @@ def _skill_dump(sk) -> Dict:
 # Task management tool
 # ---------------------------------------------------------------------------
 
-async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
-    """Handle manage_tasks tool calls: CRUD on scheduled tasks."""
+async def do_manage_tasks(
+    content: str,
+    owner: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> Dict:
+    """Handle manage_tasks tool calls: CRUD on scheduled tasks.
+
+    ``project_id`` is trusted execution context, derived from the active chat
+    session rather than supplied by the model.  This keeps assistant-created
+    tasks with the project that owns the conversation.
+    """
     import uuid as _uuid
-    from core.database import SessionLocal, ScheduledTask
+    from core.database import SessionLocal, Project, ScheduledTask
     from src.task_scheduler import compute_next_run
 
     try:
@@ -281,12 +290,27 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
         return {"error": "Invalid JSON arguments", "exit_code": 1}
 
     action = args.get("action", "list")
+    project_id = project_id.strip() if isinstance(project_id, str) else None
     db = SessionLocal()
     try:
+        if project_id:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            project_owner_matches = (
+                project
+                and (
+                    project.owner == owner
+                    if owner is not None
+                    else project.owner in (None, "__system__")
+                )
+            )
+            if not project_owner_matches:
+                return {"error": "Project not found", "exit_code": 1}
         if action == "list":
             q = db.query(ScheduledTask)
             if owner:
                 q = q.filter(ScheduledTask.owner == owner)
+            if project_id:
+                q = q.filter(ScheduledTask.project_id == project_id)
             tasks = q.order_by(ScheduledTask.created_at.desc()).all()
             task_list = []
             for t in tasks:
@@ -301,6 +325,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                     "next_run": t.next_run.isoformat() + "Z" if t.next_run else None,
                     "last_run": t.last_run.isoformat() + "Z" if t.last_run else None,
                     "run_count": t.run_count or 0,
+                    "project_id": t.project_id,
                 })
             return {"response": f"Found {len(task_list)} tasks", "tasks": task_list, "exit_code": 0}
 
@@ -344,6 +369,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 next_run=next_run,
                 status="active",
                 output_target=args.get("output_target", "session"),
+                project_id=project_id,
             )
             db.add(task)
             db.commit()

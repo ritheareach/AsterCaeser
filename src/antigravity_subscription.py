@@ -66,16 +66,18 @@ def is_antigravity_subscription_base(url: str) -> bool:
     if not url:
         return False
     url_clean = (url or "").strip().rstrip("/")
+    default_base = (DEFAULT_ANTIGRAVITY_SUBSCRIPTION_BASE_URL or "").strip().rstrip("/")
+    if default_base and url_clean == default_base:
+        return True
     try:
         from urllib.parse import urlparse
 
         parsed = urlparse(url_clean)
         host = (parsed.hostname or "").lower().rstrip(".")
-        path = (parsed.path or "").rstrip("/")
     except Exception:
         return False
     return (
-        host in ("antigravity.google",)
+        host in ("antigravity.google", "generativelanguage.googleapis.com")
         or host.endswith(".antigravity.google")
     )
 
@@ -167,18 +169,10 @@ def request_device_code(timeout: float = 15.0) -> Dict[str, Any]:
             timeout=timeout,
         )
         data = _json_or_error(response, "device-code request")
-    except Exception:
-        # Graceful local/mock device auth fallback for development/offline environments
-        import uuid
-        device_auth_id = f"agy_dev_{uuid.uuid4().hex[:8]}"
-        user_code = f"AGY-{uuid.uuid4().hex[:4].upper()}"
-        return {
-            "device_auth_id": device_auth_id,
-            "user_code": user_code,
-            "verification_uri": f"{ANTIGRAVITY_OAUTH_ISSUER}/device",
-            "interval": 5,
-            "expires_in": 900,
-        }
+    except Exception as exc:
+        raise AntigravitySubscriptionError(
+            "Could not connect to Antigravity OAuth server. Please paste your Google / Gemini API key under Settings → Add API Models → Google (or set GEMINI_API_KEY)."
+        ) from exc
 
     if not data.get("device_auth_id") or not data.get("user_code"):
         raise AntigravitySubscriptionError("Antigravity device-code response was missing required fields.")
@@ -199,38 +193,24 @@ def poll_device_auth(device_auth_id: str, user_code: str, timeout: float = 15.0)
         if response.status_code in (403, 404):
             return {"status": "pending", "error": "authorization_pending"}
         return _json_or_error(response, "device-code poll")
-    except Exception:
-        # Fallback simulation if auth server is unreachable during local testing
-        if device_auth_id.startswith("agy_dev_"):
-            return {
-                "authorization_code": f"code_{device_auth_id}",
-                "code_verifier": f"verifier_{device_auth_id}",
-            }
+    except Exception as exc:
         return {"status": "pending", "error": "authorization_pending"}
 
 
 def exchange_authorization_code(authorization_code: str, code_verifier: str, timeout: float = 15.0) -> Dict[str, Any]:
-    try:
-        response = httpx.post(
-            ANTIGRAVITY_OAUTH_TOKEN_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "authorization_code",
-                "code": authorization_code,
-                "redirect_uri": ANTIGRAVITY_OAUTH_REDIRECT_URI,
-                "client_id": ANTIGRAVITY_OAUTH_CLIENT_ID,
-                "code_verifier": code_verifier,
-            },
-            timeout=timeout,
-        )
-        data = _json_or_error(response, "token exchange")
-    except Exception:
-        # Fallback token for local/dev authentication
-        return {
-            "access_token": f"agy_access_token_{authorization_code}",
-            "refresh_token": f"agy_refresh_token_{authorization_code}",
-            "expires_in": 3600,
-        }
+    response = httpx.post(
+        ANTIGRAVITY_OAUTH_TOKEN_URL,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data={
+            "grant_type": "authorization_code",
+            "code": authorization_code,
+            "redirect_uri": ANTIGRAVITY_OAUTH_REDIRECT_URI,
+            "client_id": ANTIGRAVITY_OAUTH_CLIENT_ID,
+            "code_verifier": code_verifier,
+        },
+        timeout=timeout,
+    )
+    data = _json_or_error(response, "token exchange")
 
     if not data.get("access_token"):
         raise AntigravitySubscriptionReauthRequired("Antigravity token exchange did not return an access token.")
@@ -298,7 +278,20 @@ def _load_local_antigravity_oauth_credentials() -> Dict[str, Any]:
             if isinstance(data, dict):
                 access_token = data.get("access_token") or ""
                 refresh_token = data.get("refresh_token") or ""
-                if access_token:
+                expiry = data.get("expiry_date") or 0
+                if isinstance(expiry, (int, float)) and expiry > 0:
+                    if expiry > 100000000000:
+                        expiry = expiry / 1000.0
+                    if time.time() >= expiry - 60:
+                        if refresh_token:
+                            try:
+                                refreshed = refresh_oauth_tokens(access_token, refresh_token, timeout=5.0)
+                                if refreshed.get("access_token") and not refreshed["access_token"].startswith("agy_refreshed_access_"):
+                                    return refreshed
+                            except Exception:
+                                pass
+                        return {}
+                if access_token and not access_token_is_expiring(access_token):
                     return {"access_token": access_token, "refresh_token": refresh_token}
         except Exception:
             pass
@@ -333,7 +326,12 @@ def resolve_runtime_credentials(auth_id: str, owner: Optional[str] = None, *, fo
                 pass
 
         access_token = row.access_token or ""
-        if not access_token or access_token.startswith("agy_access_token_") or force_refresh or access_token_is_expiring(access_token):
+        if not access_token or access_token.startswith("agy_access_token_"):
+            raise AntigravitySubscriptionReauthRequired(
+                "Antigravity Subscription requires a valid Google / Gemini API Key. Please add your key under Settings → Add API Models → Google (or run /setup gemini <key>)."
+            )
+
+        if force_refresh or access_token_is_expiring(access_token):
             local_creds = _load_local_antigravity_oauth_credentials()
             if local_creds.get("access_token"):
                 access_token = local_creds["access_token"]
@@ -357,20 +355,11 @@ def resolve_runtime_credentials(auth_id: str, owner: Optional[str] = None, *, fo
                         db.commit()
                         db.refresh(row)
             access_token = row.access_token or ""
-        if force_refresh or access_token_is_expiring(access_token):
-            with _refresh_lock_for(auth_id):
-                db.refresh(row)
-                access_token = row.access_token or ""
-                refresh_token = row.refresh_token or ""
-                if force_refresh or access_token_is_expiring(access_token):
-                    refreshed = refresh_oauth_tokens(access_token, refresh_token)
-                    row.access_token = refreshed["access_token"]
-                    if refreshed.get("refresh_token"):
-                        row.refresh_token = refreshed["refresh_token"]
-                    row.last_refresh = utcnow_naive()
-                    db.commit()
-                    db.refresh(row)
-            access_token = row.access_token or ""
+
+        if not access_token or access_token.startswith("agy_access_token_"):
+            raise AntigravitySubscriptionReauthRequired(
+                "Antigravity Subscription requires a valid Google / Gemini API Key. Please add your key under Settings → Add API Models → Google (or run /setup gemini <key>)."
+            )
 
         return {
             "provider": ANTIGRAVITY_SUBSCRIPTION_PROVIDER,

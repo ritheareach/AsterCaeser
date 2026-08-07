@@ -499,14 +499,24 @@ export function createPreviewPanel({
     }
   }
 
-  function updateFrameScale(container, frame) {
+  function updateFrameScale(container, scaler, frame) {
     if (!is169) {
+      // Full mode: the page fills the whole preview area.
       frame.style.width = '100%';
       frame.style.height = '100%';
       frame.style.flex = '1 1 auto';
+      frame.style.minHeight = '0';
       frame.style.removeProperty('transform');
       frame.style.removeProperty('transform-origin');
-      frame.style.removeProperty('min-height');
+
+      scaler.style.width = '100%';
+      scaler.style.height = '100%';
+      scaler.style.flex = '1 1 auto';
+      scaler.style.minHeight = '0';
+      scaler.style.display = 'flex';
+      scaler.style.flexDirection = 'column';
+      scaler.style.removeProperty('transform');
+      scaler.style.removeProperty('transform-origin');
 
       container.style.removeProperty('height');
       container.style.display = 'flex';
@@ -517,21 +527,36 @@ export function createPreviewPanel({
       container.style.removeProperty('overflow');
       return;
     }
+    // 16:9 mode — the ORIGINAL editor behaviour: a fixed 1280×720 page
+    // viewport (desktop layout, media queries see 1280px) scaled down to the
+    // container width. The iframe keeps its natural 1:1 layout inside a
+    // transform-scaled wrapper so pointer hit-testing stays exact (a
+    // transform directly on the iframe mis-maps clicks in some browsers).
     const containerWidth = container.clientWidth;
     const scale = containerWidth / 1280;
+    const scaledHeight = Math.max(1, Math.round(720 * scale));
+
     frame.style.width = '1280px';
     frame.style.height = '720px';
-    frame.style.transform = `scale(${scale})`;
-    frame.style.transformOrigin = 'top left';
+    frame.style.flex = '0 0 auto';
     frame.style.minHeight = 'unset';
-    frame.style.removeProperty('flex');
+    frame.style.removeProperty('transform');
+    frame.style.removeProperty('transform-origin');
 
-    container.style.height = `${720 * scale}px`;
+    scaler.style.width = '1280px';
+    scaler.style.height = '720px';
+    scaler.style.flex = '0 0 auto';
+    scaler.style.minHeight = 'unset';
+    scaler.style.display = 'block';
+    scaler.style.transform = `scale(${scale})`;
+    scaler.style.transformOrigin = 'top left';
+
+    container.style.height = `${scaledHeight}px`;
     container.style.display = 'block';
     container.style.position = 'relative';
     container.style.overflow = 'hidden';
     container.style.flex = '0 0 auto';
-    container.style.removeProperty('min-height');
+    container.style.minHeight = '0';
   }
 
   function renderWebFrame(url) {
@@ -541,6 +566,9 @@ export function createPreviewPanel({
 
     const container = document.createElement('div');
     container.className = 'editor-web-preview-container';
+
+    const scaler = document.createElement('div');
+    scaler.className = 'editor-web-preview-scaler';
 
     const frame = document.createElement('iframe');
     frame.className = 'editor-web-preview-frame';
@@ -554,17 +582,18 @@ export function createPreviewPanel({
       emitStatus('error', 'Web preview failed to load');
     });
     frame.src = url;
-    container.append(frame);
+    scaler.append(frame);
+    container.append(scaler);
     body.append(container);
 
     if (resizeObserver) {
       resizeObserver.disconnect();
     }
     resizeObserver = new ResizeObserver(() => {
-      updateFrameScale(container, frame);
+      updateFrameScale(container, scaler, frame);
     });
     resizeObserver.observe(container);
-    updateFrameScale(container, frame);
+    updateFrameScale(container, scaler, frame);
   }
 
   function openWebPreview(value) {
@@ -630,9 +659,10 @@ export function createPreviewPanel({
     is169 = !is169;
     ratioToggle.textContent = is169 ? 'Scale: 16:9' : 'Scale: Full';
     const container = body.querySelector('.editor-web-preview-container');
+    const scaler = body.querySelector('.editor-web-preview-scaler');
     const frame = body.querySelector('.editor-web-preview-frame');
-    if (container && frame) {
-      updateFrameScale(container, frame);
+    if (container && scaler && frame) {
+      updateFrameScale(container, scaler, frame);
     }
   });
   external.addEventListener('click', () => {

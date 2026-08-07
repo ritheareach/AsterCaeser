@@ -24,7 +24,7 @@ from tests.helpers.import_state import clear_fake_database_modules
 clear_fake_database_modules()
 
 import core.database as cdb
-from core.database import ScheduledTask
+from core.database import Project, ScheduledTask, Workspace
 from src.tools.system import do_manage_tasks
 
 _TMPDB = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -57,6 +57,17 @@ def _get(task_id):
     db = _TS()
     try:
         return db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
+    finally:
+        db.close()
+
+
+def _seed_project(project_id="project-alice", owner="alice"):
+    db = _TS()
+    try:
+        workspace_id = f"workspace-{project_id}"
+        db.add(Workspace(id=workspace_id, name="Workspace", owner=owner))
+        db.add(Project(id=project_id, workspace_id=workspace_id, name="Project", owner=owner))
+        db.commit()
     finally:
         db.close()
 
@@ -137,3 +148,35 @@ async def test_edit_allowed_in_no_login_mode():
     )
     assert out["exit_code"] == 0
     assert _get("shared-task").prompt == "updated"
+
+
+@pytest.mark.asyncio
+async def test_create_inherits_validated_project_scope_and_list_is_scoped():
+    _seed_project()
+    out = await do_manage_tasks(
+        json.dumps({
+            "action": "create", "name": "project task", "prompt": "do project work",
+            "trigger_type": "event", "trigger_event": "message_sent",
+        }),
+        owner="alice",
+        project_id="project-alice",
+    )
+    assert out["exit_code"] == 0
+    task = _get(out["task_id"])
+    assert task.project_id == "project-alice"
+
+    listed = await do_manage_tasks(json.dumps({"action": "list"}), owner="alice", project_id="project-alice")
+    assert [task["name"] for task in listed["tasks"]] == ["project task"]
+    assert listed["tasks"][0]["project_id"] == "project-alice"
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_project_owned_by_another_user():
+    _seed_project("project-bob", owner="bob")
+    out = await do_manage_tasks(
+        json.dumps({"action": "create", "name": "bad", "prompt": "nope", "trigger_type": "event", "trigger_event": "message_sent"}),
+        owner="alice",
+        project_id="project-bob",
+    )
+    assert out["exit_code"] == 1
+    assert out["error"] == "Project not found"

@@ -7,6 +7,7 @@ import uiModule from './js/ui.js';
 import workspaceModule from './js/workspace.js';
 import { initProjectManager, openCodeEditor } from './js/projectManager.js';
 import { initCodeEditor } from './js/editor/editor.js';
+import { initProjectTools } from './js/projectTools.js';
 import fileHandlerModule from './js/fileHandler.js';
 import modelsModule from './js/models.js';
 import ragModule from './js/rag.js';
@@ -172,6 +173,9 @@ function initRailHoverLabels() {
     'rail-archive': 'Library',
     'rail-memory': 'Brain',
     'rail-notes': 'Notes',
+    'rail-terminal': 'Terminal',
+    'rail-preview': 'Preview',
+    'rail-webview': 'Web view',
     'rail-tasks': 'Tasks',
     'rail-theme': 'Theme',
     'rail-settings': 'Settings',
@@ -3615,6 +3619,7 @@ function startAsterCaeserApp() {
 
   // Initialize all event listeners
   try { initializeEventListeners(); } catch(e) { console.error('Event init error:', e); }
+  try { initProjectTools(); } catch (e) { console.error('Project tools init error:', e); }
   try {
     initCodeEditor();
     const editorWasOpen = localStorage.getItem('astercaeser-editor-open') === 'true';
@@ -3679,6 +3684,9 @@ function startAsterCaeserApp() {
     'rail-calendar':  'tool-calendar-btn',
     'rail-notes':     'tool-notes-btn',
     'rail-memory':    'tool-memory-btn',
+    'rail-terminal':  'tool-terminal-btn',
+    'rail-preview':   'tool-preview-btn',
+    'rail-webview':   'tool-webview-btn',
     'rail-theme':     'tool-theme-btn',
     'rail-email':     'email-section-title',
   };

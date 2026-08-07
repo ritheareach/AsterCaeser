@@ -34,7 +34,10 @@
 //     enableDock:      bool — enable left + right edge docks.
 //                        Default true.
 //     enableFullscreen: bool — enable top-edge fullscreen snap.
-//                        Default true when onEnterFullscreen is supplied.
+//                        Opt-in (default false): tileManager already owns
+//                        snap zones for .modal windows, so callers that want
+//                        top-edge fullscreen (e.g. the code editor, which is
+//                        not a .modal) pass enableFullscreen: true.
 
 import { makeEdgeDockController } from './modalSnap.js';
 import { makeWindowResizable } from './windowResize.js';
@@ -61,7 +64,7 @@ export function makeWindowDraggable(modal, options = {}) {
   const fsClass = options.fsClass || null;
   const onEnterFullscreen = options.onEnterFullscreen || null;
   const onExitFullscreen = options.onExitFullscreen || null;
-  const enableFullscreen = false;
+  const enableFullscreen = options.enableFullscreen === true;
   const onDragEnd = options.onDragEnd || null;
   const onDragStart = options.onDragStart || null;
   const skipSelector = options.skipSelector || 'button, input, select';

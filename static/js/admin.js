@@ -814,17 +814,30 @@ function initEndpointForm() {
       urlInput.value = '';
       urlInput.placeholder = deviceAuthProvider === 'copilot'
         ? 'GitHub Copilot uses GitHub account sign-in'
-        : 'ChatGPT Subscription uses OpenAI account sign-in';
+        : (deviceAuthProvider === 'antigravity-subscription'
+          ? 'Antigravity Subscription uses Google account sign-in'
+          : 'ChatGPT Subscription uses OpenAI account sign-in');
       urlInput.readOnly = true;
       if (apiKey) {
-        apiKey.value = '';
-        apiKey.placeholder = 'No API key needed';
-        apiKey.disabled = true;
+        if (deviceAuthProvider === 'antigravity-subscription') {
+          apiKey.placeholder = 'Paste Google / Gemini API key (AIzaSy...)';
+          apiKey.disabled = false;
+        } else {
+          apiKey.value = '';
+          apiKey.placeholder = 'No API key needed';
+          apiKey.disabled = true;
+        }
       }
       if (testBtn) {
-        testBtn.disabled = true;
-        testBtn.style.opacity = '0.45';
-        testBtn.style.cursor = 'not-allowed';
+        if (deviceAuthProvider === 'antigravity-subscription') {
+          testBtn.disabled = false;
+          testBtn.style.opacity = '';
+          testBtn.style.cursor = '';
+        } else {
+          testBtn.disabled = true;
+          testBtn.style.opacity = '0.45';
+          testBtn.style.cursor = 'not-allowed';
+        }
       }
       if (addBtn) {
         addBtn.disabled = false;
@@ -1170,8 +1183,12 @@ function initEndpointForm() {
         onStart: ({ start, authUrl }) => {
           if (triggerEl) triggerEl.textContent = 'Waiting...';
           status.className = '';
-          const authLabel = providerKey === 'copilot' ? 'Authorize on GitHub' : 'Authorize with OpenAI';
-          const waitLabel = providerKey === 'copilot' ? 'Waiting for GitHub authorization...' : 'Waiting for ChatGPT authorization...';
+          const authLabel = providerKey === 'copilot'
+            ? 'Authorize on GitHub'
+            : (providerKey === 'antigravity-subscription' ? 'Authorize with Google' : 'Authorize with OpenAI');
+          const waitLabel = providerKey === 'copilot'
+            ? 'Waiting for GitHub authorization...'
+            : (providerKey === 'antigravity-subscription' ? 'Waiting for Antigravity authorization...' : 'Waiting for ChatGPT authorization...');
           status.innerHTML =
             '<div class="adm-copilot-panel">' +
               '<div class="adm-copilot-wait"><span class="admin-spinner"></span>' +

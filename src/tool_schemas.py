@@ -424,6 +424,23 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "spawn_subagent",
+            "description": "Delegate a self-contained task to a fresh-context subagent that works autonomously with its own tools and returns a final answer. Use for deep research, large file analysis, or multi-step work you do not want to do inline — the subagent runs with a clean context and its own restricted tool access, and reports back when done. The subagent CANNOT ask the user questions; by default it has a safe read-mostly tool set (no shell). Include 'bash' or 'edit_file'/'write_file' in 'tools' only when the task genuinely requires them.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The self-contained task for the subagent. Its context is fresh, so include every fact it needs."},
+                    "model": {"type": "string", "description": "Optional model name (or model@endpoint). Defaults to the current session model."},
+                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit tool allowlist. Defaults to a safe read-mostly set. Shell, file-edit, and admin tools must be listed explicitly."},
+                    "max_rounds": {"type": "integer", "description": "Optional cap on subagent tool rounds (default 6, max 20)."}
+                },
+                "required": ["prompt"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ui_control",
             "description": "Control the user interface. Actions: toggle (turn tools on/off), open_panel (open a modal: documents/library, gallery, email, sessions, notes, memories/brain, skills, settings, cookbook), open_email_reply (open an email reply draft document; DOES NOT send. For 'write/draft a reply saying X', include body with the drafted reply), set_mode, switch_model, set_theme (built-in presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute), create_theme (CREATE any custom theme with a name + colors object — pick distinctive, evocative hex colors that match the requested aesthetic, NOT generic defaults. The theme auto-applies after creation). When a user asks for ANY theme not in the built-in preset list, ALWAYS use create_theme.",
             "parameters": {

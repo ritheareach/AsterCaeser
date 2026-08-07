@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File as FastAPIFile, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 try:  # Keep the module importable on the project's older Pydantic installs.
@@ -37,11 +37,12 @@ from src.tool_security import owner_is_admin_or_single_user
 logger = logging.getLogger(__name__)
 
 _MAX_BROWSE_DIRS = 500
-_MAX_LIST_ENTRIES = 500
+_MAX_LIST_ENTRIES = 5_000
 _MAX_GREP_FILES = 1_000
 _MAX_GREP_RESULTS = 500
 _MAX_TEXT_FILE_BYTES = 1_000_000
 _MAX_WRITE_BYTES = 1_000_000
+_MAX_PROJECT_UPLOAD_BYTES = 10_000_000
 _MAX_WEBVIEW_BRIDGE_FILES = 500
 _MAX_NAME_LENGTH = 120
 _MAX_DESCRIPTION_LENGTH = 10_000
@@ -60,6 +61,26 @@ _MAX_TYPST_PAGES = 20
 _MAX_TYPST_PAGE_BYTES = 16_000_000
 _MAX_TYPST_TOTAL_BYTES = 64_000_000
 _TYPST_TIMEOUT_SECONDS = 20
+_WEBVIEW_BRIDGE_TAG_RE = re.compile(
+    r"<script\b(?=[^>]*\bdata-astercaeser-webview-bridge\b)[^>]*>.*?</script\s*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _upsert_webview_bridge_tag(content: str, tag: str) -> tuple[str, bool]:
+    """Insert or refresh this project's webview bridge script tag.
+
+    A project can move from localhost to a LAN/Tailscale AsterCaeser URL.  In
+    that case an existing bridge must be refreshed: keeping its old `src`
+    makes the iframe send snapshots to the wrong trusted origin.
+    """
+    updated, replaced = _WEBVIEW_BRIDGE_TAG_RE.subn(tag, content, count=1)
+    if replaced:
+        return updated, updated != content
+    head_end = content.lower().find("</head>")
+    if head_end < 0:
+        return content, False
+    return content[:head_end] + "    " + tag + "\n" + content[head_end:], True
 
 
 class WorkspaceCreate(BaseModel):
@@ -812,8 +833,6 @@ def setup_workspace_routes():
                         stat = entry.stat(follow_symlinks=False)
                     except OSError:
                         continue
-                    if not is_dir and _binary_or_oversized(entry.path, stat.st_size):
-                        continue
                     entries.append({
                         "name": entry.name,
                         "path": os.path.relpath(entry.path, root),
@@ -856,10 +875,9 @@ def setup_workspace_routes():
                         content = Path(path).read_text(encoding="utf-8-sig")
                     except (OSError, UnicodeDecodeError):
                         continue
-                    if "data-astercaeser-webview-bridge" in content or "</head>" not in content.lower():
+                    updated, changed = _upsert_webview_bridge_tag(content, tag)
+                    if not changed:
                         continue
-                    head_end = content.lower().find("</head>")
-                    updated = content[:head_end] + "    " + tag + "\n" + content[head_end:]
                     try:
                         Path(path).write_text(updated, encoding="utf-8")
                     except OSError:
@@ -922,6 +940,54 @@ def setup_workspace_routes():
             raise HTTPException(500, f"Failed to write file: {exc}")
         stat = os.stat(target)
         return {"ok": True, "path": os.path.relpath(target, root), "version": f"{stat.st_mtime_ns}:{stat.st_size}"}
+
+    @router.post("/{wid}/project/{pid}/files/upload")
+    async def upload_files(
+        request: Request,
+        wid: str,
+        pid: str,
+        files: list[UploadFile] = FastAPIFile(...),
+        directory: str = Form(""),
+        overwrite: bool = Form(False),
+    ):
+        """Upload dropped files into the selected project directory."""
+        root, _ = _project_file(request, wid, pid, "", allow_root=True)
+        directory = directory.strip().replace("\\", "/").strip("/")
+        if directory:
+            directory_target = _safe_path(root, directory, allow_root=True)
+            if not os.path.isdir(directory_target):
+                raise HTTPException(409, "Drop target directory does not exist")
+
+        payloads = []
+        for upload in files:
+            name = os.path.basename(str(upload.filename or "").replace("\\", "/")).strip()
+            if not name or name in {".", ".."}:
+                raise HTTPException(422, "Dropped files must have a valid filename")
+            relative = f"{directory}/{name}" if directory else name
+            _, target = _project_file(request, wid, pid, relative)
+            data = await upload.read(_MAX_PROJECT_UPLOAD_BYTES + 1)
+            if len(data) > _MAX_PROJECT_UPLOAD_BYTES:
+                raise HTTPException(413, f"{name} is larger than 10 MB")
+            payloads.append((name, relative, target, data))
+
+        conflicts = [relative for _, relative, target, _ in payloads if os.path.exists(target)]
+        if conflicts and not overwrite:
+            raise HTTPException(409, {"message": "Some files already exist", "files": conflicts})
+
+        uploaded = []
+        for name, relative, target, data in payloads:
+            try:
+                Path(target).write_bytes(data)
+                stat = os.stat(target)
+            except OSError as exc:
+                raise HTTPException(500, f"Failed to upload {name}: {exc}")
+            uploaded.append({
+                "name": name,
+                "path": relative,
+                "size": len(data),
+                "version": f"{stat.st_mtime_ns}:{stat.st_size}",
+            })
+        return {"ok": True, "uploaded": uploaded}
 
     @router.post("/{wid}/project/{pid}/files/create")
     def create_file(request: Request, wid: str, pid: str, body: FileCreate):

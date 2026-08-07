@@ -265,11 +265,9 @@ function _initModelPickerDropdown() {
       const probeResult = item.endpoint_id ? _localProbe[item.endpoint_id] : null;
       const isLocalDead = !!(probeResult && probeResult.alive === false);
       allModels.forEach((mid, i) => {
-        // Deduplicate by model ID — prefer ONLINE endpoint entries over
-        // offline duplicates so the user gets a working endpoint first
-        // when the same model is exposed by both.
-        if (seen.has(mid)) return;
-        seen.add(mid);
+        const key = mid + '@' + (item.endpoint_id || item.url || '');
+        if (seen.has(key)) return;
+        seen.add(key);
         result.push({
           mid,
           display: (allDisplay[i] || mid).split('/').pop(),
@@ -477,7 +475,16 @@ function _initModelPickerDropdown() {
           .filter(Boolean).join(' ').toLowerCase().includes(q);
       });
       if (matches.length === 0) _addEmpty('No matching models');
-      else matches.forEach(_addRow);
+      else {
+        const searchSeen = new Set();
+        matches.forEach(m => {
+          if (!connector) {
+            if (searchSeen.has(m.mid)) return;
+            searchSeen.add(m.mid);
+          }
+          _addRow(m);
+        });
+      }
       return;
     }
 

@@ -16,10 +16,27 @@
   const SELECTED = 'astercaeser-webview-element-selected';
   const MAX_TEXT = 40_000;
   const MAX_ELEMENTS = 300;
+  const MAX_HEADINGS = 80;
+  const MAX_LANDMARKS = 40;
+  const MAX_TABLES = 12;
+  const MAX_TABLE_ROWS = 20;
+
+  // The bridge is served by AsterCaeser itself.  Capture that exact origin
+  // while the script is loading and trust only it as an additional parent.
+  // This supports LAN/Tailscale use (for example http://100.x.y.z:7860)
+  // without opening snapshots to arbitrary sites on the same network.
+  const bridgeOrigin = (() => {
+    try {
+      return new URL(document.currentScript?.src || '', document.baseURI).origin;
+    } catch (_) {
+      return '';
+    }
+  })();
 
   function isTrustedParent(origin) {
     try {
       const url = new URL(origin);
+      if (bridgeOrigin && url.origin === bridgeOrigin) return true;
       return url.protocol === 'http:' && (
         url.hostname === 'localhost'
         || url.hostname === '127.0.0.1'
@@ -77,6 +94,84 @@
     return item;
   }
 
+  function cleanText(value, limit = 500) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+  }
+
+  function isInViewport(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0
+      && rect.bottom >= 0 && rect.right >= 0
+      && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
+  }
+
+  function describeLandmark(element) {
+    const item = describeElement(element);
+    if (!item || !isInViewport(element)) return null;
+    return {
+      tag: item.tag,
+      role: item.role || element.tagName.toLowerCase(),
+      label: item.label || cleanText(element.getAttribute('aria-label') || element.getAttribute('aria-labelledby')),
+      text: item.text.slice(0, 1_000),
+      rect: item.rect,
+    };
+  }
+
+  function describeTable(table) {
+    const tableItem = describeElement(table);
+    if (!tableItem || !isInViewport(table)) return null;
+    const rows = [];
+    table.querySelectorAll('tr').forEach((row) => {
+      if (rows.length >= MAX_TABLE_ROWS || !isInViewport(row)) return;
+      const cells = [...row.querySelectorAll(':scope > th, :scope > td')]
+        .map(cell => cleanText(cell.innerText || cell.textContent, 400))
+        .filter(Boolean)
+        .slice(0, 16);
+      if (cells.length) rows.push(cells);
+    });
+    if (!rows.length) return null;
+    return {
+      label: tableItem.label || cleanText(table.querySelector('caption')?.textContent, 300),
+      rect: tableItem.rect,
+      rows,
+    };
+  }
+
+  function semanticSnapshot() {
+    const headings = [];
+    document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]').forEach((element) => {
+      if (headings.length >= MAX_HEADINGS || !isInViewport(element)) return;
+      const item = describeElement(element);
+      if (!item || !item.text) return;
+      headings.push({
+        level: Number(element.getAttribute('aria-level') || element.tagName.slice(1)) || 0,
+        text: item.text,
+        rect: item.rect,
+      });
+    });
+
+    const landmarks = [];
+    document.querySelectorAll('main,nav,header,footer,aside,section,[role="main"],[role="navigation"],[role="dialog"],[role="tabpanel"],[role="region"]').forEach((element) => {
+      if (landmarks.length >= MAX_LANDMARKS) return;
+      const item = describeLandmark(element);
+      if (item) landmarks.push(item);
+    });
+
+    const tables = [];
+    document.querySelectorAll('table,[role="table"],[role="grid"]').forEach((table) => {
+      if (tables.length >= MAX_TABLES) return;
+      const item = describeTable(table);
+      if (item) tables.push(item);
+    });
+
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight, scrollX: Math.round(window.scrollX), scrollY: Math.round(window.scrollY) },
+      headings,
+      landmarks,
+      tables,
+    };
+  }
+
   function snapshot() {
     const text = String(document.body?.innerText || '')
       .replace(/[ \t]+\n/g, '\n')
@@ -96,6 +191,7 @@
       text: text.slice(0, MAX_TEXT),
       truncated: text.length > MAX_TEXT,
       elements,
+      semantic: semanticSnapshot(),
       at: Date.now(),
     };
   }

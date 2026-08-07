@@ -7,25 +7,28 @@
  *   openAt(path, { line, column })      load/focus a project-relative file
  *   saveActiveFile(), closeEditor()     lifecycle actions
  *   getCurrentContext(), getActiveDocument()
- *   requestPanel('terminal'|'search'|'preview'|'ai')
+ *   requestPanel('search')
  *
  * Events use an `aster:editor-*` namespace. The detail always includes the
  * immutable `{ workspaceId, projectId, path }` context where it is relevant:
  * `opened`, `closed`, `active-document`, `document-changed`, `saved`, and
- * `panel-request`. Terminal and search are project-scoped panels; preview and
- * AI retain extension slots without creating a second editor implementation.
+ * `panel-request`. The search panel is project-scoped.
+ *
+ * AI chat lives in the main window: select code and use "Ask agent" to hand
+ * the selection off to the main chat (the editor closes to reveal it).
  */
 import { mountFileTree } from '../fileTree.js';
 import uiModule from '../ui.js';
 import { askAgentAboutSelection, requestInlineCompletion } from './ai.js';
-import { createPreviewPanel } from './preview.js';
-import { previewKindFor } from '../aster/editor/preview.js';
 import { ProjectSearchPanel } from './search.js';
-import { ProjectTerminal } from './terminal.js';
+import { makeWindowDraggable } from '../windowDrag.js';
+import * as Modals from '../modalManager.js';
+import { applyEdgeDock, clearRightDock } from '../modalSnap.js';
 import {
   basicSetup,
   Compartment,
   css,
+  EditorSelection,
   EditorState,
   EditorView,
   html,
@@ -124,7 +127,7 @@ async function loadTypstLang() {
 
 const API_ROOT = '/api/workspace';
 const PERSISTENCE_PREFIX = 'astercaeser-code-editor:';
-const PANEL_NAMES = new Set(['terminal', 'search', 'preview', 'ai']);
+const PANEL_NAMES = new Set(['search']);
 const TAB_SIZES = new Set([2, 4, 8]);
 const MAX_LIVE_EDITOR_CHARS = 500_000;
 
@@ -139,30 +142,16 @@ const state = {
   tabSize: 2,
   treeVisible: true,
   toolsVisible: true,
-  previewWidth: null,
-  activePanel: 'terminal',
+  activePanel: 'search',
   panels: null,
-  preview: null,
   symbolRequestId: 0,
   completionRequestId: 0,
   initialized: false,
   noticeTimer: null,
-  previewTimer: null,
   externalPollTimer: null,
-  terminalSessions: [],
-  activeTerminalSessionId: null,
   toolsPosition: 'bottom',
-  aiModel: '',
-  aiEndpointUrl: '',
-  aiEndpointId: '',
   draggedPanelName: null,
-  // Latest text snapshot streamed up from the web preview iframe via the
-  // postMessage bridge (see sendAiMessage). The webview is cross-origin, so
-  // the iframe's DOM can't be read directly — the embedded page sends it.
-  webviewSnapshot: null,
 };
-
-let aiMirrorObserver = null;
 
 const editorTheme = EditorView.theme({
   '&': {
@@ -325,6 +314,10 @@ function createDocument(path) {
     saving: null,
     diskVersion: '',
     externalVersion: '',
+    // Once a previously-open file is removed or renamed, stop the background
+    // watcher from requesting it every two seconds. The tab remains available
+    // with its last loaded content so the user can copy/recover it.
+    externalMissing: false,
     state: null,
     languageCompartment: new Compartment(),
     vimCompartment: new Compartment(),
@@ -349,20 +342,79 @@ function createEditorState(document) {
       document.languageCompartment.of(language),
       document.tabSizeCompartment.of(EditorState.tabSize.of(state.tabSize)),
       keymap.of([
+        { key: 'Tab', run: indentWithConfiguredTab, preventDefault: true },
         { key: 'Mod-s', run: () => { void saveActiveFile(); return true; } },
         { key: 'Mod-\\', run: () => { toggleFileTree(); return true; } },
         { key: 'Mod-Shift-j', run: () => { toggleToolsPanel(); return true; } },
-        { key: 'Mod-j', run: () => { showPanel('terminal'); return true; } },
+        { key: 'Mod-j', run: () => { showPanel('search'); return true; } },
         { key: 'Mod-Alt-a', run: () => { askAgentForSelection(); return true; } },
         { key: 'Mod-k', run: () => { showCommandPalette(); return true; } },
         { key: 'Ctrl-Space', run: () => { void checkInlineCompletion(); return true; } },
         { key: 'Alt-/', run: () => { void checkInlineCompletion(); return true; } },
         { key: 'F11', run: () => { void toggleFullscreen(); return true; } },
+        { key: 'Mod-Alt-ArrowLeft', run: () => { toggleDock('left'); return true; } },
+        { key: 'Mod-Alt-ArrowRight', run: () => { toggleDock('right'); return true; } },
+        { key: 'Mod-Alt-m', run: () => { Modals.minimize('code-editor-root'); return true; } },
         { key: 'Mod-Shift-/', run: () => { showKeyboardHelp(); return true; } },
       ]),
       EditorView.updateListener.of(update => handleViewUpdate(document, update)),
     ],
   });
+}
+
+/**
+ * Keep Tab inside the editor. CodeMirror's default indentation can be driven
+ * by a language's preferred indent width, which is not necessarily the value
+ * selected in the editor toolbar. This handler always uses that selected
+ * width, while still advancing to the next tab stop for a cursor mid-line.
+ */
+function indentWithConfiguredTab(view) {
+  const tabSize = state.tabSize;
+  const document = view.state.doc;
+  const changes = new Map();
+
+  for (const range of view.state.selection.ranges) {
+    if (range.empty) {
+      const line = document.lineAt(range.head);
+      const column = range.head - line.from;
+      const spaces = tabSize - (column % tabSize);
+      changes.set(range.head, ' '.repeat(spaces));
+      continue;
+    }
+
+    const firstLine = document.lineAt(range.from).number;
+    const endLine = document.lineAt(range.to).number;
+    const lastLine = range.to > range.from && range.to === document.line(endLine).from
+      ? endLine - 1
+      : endLine;
+    for (let number = firstLine; number <= lastLine; number += 1) {
+      changes.set(document.line(number).from, ' '.repeat(tabSize));
+    }
+  }
+
+  if (!changes.size) return false;
+  const edits = [...changes]
+    .sort(([fromA], [fromB]) => fromA - fromB)
+    .map(([from, insert]) => ({ from, insert }));
+  // A selection is associated with the left side of an inserted change by
+  // default. Explicitly map it to the right side so the caret lands after the
+  // spaces just inserted, exactly as it does in a normal code editor.
+  const movePastIndent = position => position + edits.reduce(
+    (offset, edit) => offset + (edit.from <= position ? edit.insert.length : 0),
+    0,
+  );
+  view.dispatch({
+    changes: edits,
+    selection: EditorSelection.create(
+      view.state.selection.ranges.map(range => EditorSelection.range(
+        movePastIndent(range.anchor),
+        movePastIndent(range.head),
+      )),
+      view.state.selection.mainIndex,
+    ),
+    userEvent: 'input.indent',
+  });
+  return true;
 }
 
 function handleViewUpdate(document, update) {
@@ -376,18 +428,162 @@ function handleViewUpdate(document, update) {
     }
     persist();
     emit('document-changed', { document: documentSnapshot(document) });
-    queueMarkdownPreview(document);
   } else if (update.selectionSet && document.path === state.activePath) {
     updateStatus();
   }
   if (document.path === state.activePath && (update.docChanged || update.selectionSet)) {
     updateAskAgentAction();
-    updatePreviewAction();
   }
 }
 
 function getRootPart(selector) {
   return state.root?.querySelector(selector) || null;
+}
+
+// ── Floating-window mode ────────────────────────────────────────────────────
+// The editor used to be a fullscreen-only overlay. It is now also a
+// draggable/resizable/dockable window: drag the windowbar, resize any edge,
+// dock left/right beside the chat, minimize to the dock chip, or maximize
+// (F11 / ⛶). Mode + position persist across opens; size persists via the
+// shared windowResize storage key.
+
+const WINDOW_MODE_KEY = 'astercaeser-editor-window';
+
+function loadWindowPrefs() {
+  try { return JSON.parse(localStorage.getItem(WINDOW_MODE_KEY) || 'null') || {}; } catch (_) { return {}; }
+}
+function saveWindowPrefs(prefs) {
+  try { localStorage.setItem(WINDOW_MODE_KEY, JSON.stringify(prefs)); } catch (_) {}
+}
+function storedWinSize() {
+  try {
+    const s = JSON.parse(localStorage.getItem('winsize-code-editor-root') || 'null');
+    if (s && Number.isFinite(s.w) && Number.isFinite(s.h)) return { w: s.w, h: s.h };
+  } catch (_) {}
+  return null;
+}
+
+function defaultWindowRect() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = Math.min(980, Math.max(440, Math.round(vw * 0.72)));
+  const h = Math.min(760, Math.max(340, Math.round(vh * 0.78)));
+  return {
+    left: Math.max(8, Math.round((vw - w) / 2)),
+    top: Math.max(8, Math.round((vh - h) / 3)),
+    width: w,
+    height: h,
+  };
+}
+
+function enterWindowed() {
+  const root = state.root;
+  if (!root) return;
+  const prefs = loadWindowPrefs();
+  const stored = storedWinSize();
+  const def = defaultWindowRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = Math.min(vw - 16, Math.max(440, (stored && stored.w) || (prefs.mode === 'windowed' && prefs.width) || def.width));
+  const h = Math.min(vh - 16, Math.max(320, (stored && stored.h) || (prefs.mode === 'windowed' && prefs.height) || def.height));
+  let left = (prefs.mode === 'windowed' && Number.isFinite(prefs.left)) ? prefs.left : def.left;
+  let top = (prefs.mode === 'windowed' && Number.isFinite(prefs.top)) ? prefs.top : def.top;
+  left = Math.max(8, Math.min(vw - w - 8, left));
+  top = Math.max(8, Math.min(vh - h - 8, top));
+  root.classList.remove('code-editor-fullscreen');
+  root.style.position = 'fixed';
+  root.style.left = left + 'px';
+  root.style.top = top + 'px';
+  root.style.width = w + 'px';
+  root.style.height = h + 'px';
+  root.style.maxWidth = 'none';
+  root.style.maxHeight = 'none';
+  root.style.right = 'auto';
+  root.style.bottom = 'auto';
+  root.style.margin = '0';
+  root.style.transform = 'none';
+  root.style.borderRadius = '';
+  root.style.zIndex = '300';
+  saveWindowPrefs({ ...prefs, mode: 'windowed', left, top, width: w, height: h });
+  updateWindowBar();
+}
+
+function enterFullscreen() {
+  const root = state.root;
+  if (!root) return;
+  root.classList.add('code-editor-fullscreen');
+  ['left', 'top', 'right', 'bottom', 'width', 'maxWidth', 'height', 'maxHeight', 'borderRadius', 'transform', 'margin', 'zIndex'].forEach(p => root.style.removeProperty(p));
+  saveWindowPrefs({ ...loadWindowPrefs(), mode: 'fullscreen' });
+  updateWindowBar();
+}
+
+function toggleDock(side) {
+  const root = state.root;
+  if (!root) return;
+  const docked = root.classList.contains('modal-left-docked') ? 'left'
+    : root.classList.contains('modal-right-docked') ? 'right' : null;
+  if (docked) {
+    if (docked === side) {
+      clearRightDock(root);
+    } else {
+      clearRightDock(root);
+      requestAnimationFrame(() => applyEdgeDock(root, side));
+    }
+    return;
+  }
+  if (root.classList.contains('code-editor-fullscreen')) enterWindowed();
+  applyEdgeDock(root, side);
+}
+
+function updateWindowBar() {
+  const root = state.root;
+  if (!root) return;
+  const nameEl = root.querySelector('.ce-window-name');
+  const pathEl = root.querySelector('.ce-window-path');
+  if (!nameEl && !pathEl) return;
+  const ctx = state.context || {};
+  const path = ctx.path || '';
+  const name = path ? (path.split('/').filter(Boolean).pop() || path) : (ctx.projectId || 'Code editor');
+  if (nameEl) nameEl.textContent = name;
+  if (pathEl) pathEl.textContent = path;
+}
+
+function wireWindow(root) {
+  if (root._ceWindowWired) return;
+  root._ceWindowWired = true;
+  const bar = root.querySelector('.code-editor-windowbar');
+  if (!bar) return;
+  makeWindowDraggable(root, {
+    content: root,
+    header: bar,
+    fsClass: 'code-editor-fullscreen',
+    mobileSkip: 768,
+    minWidth: 440,
+    minHeight: 320,
+    resizeStorageKey: 'winsize-code-editor-root',
+    enableFullscreen: true,
+    onEnterFullscreen: enterFullscreen,
+    onExitFullscreen: (cx, cy) => { enterWindowed(); },
+    onDragEnd: ({ rect }) => {
+      if (root.classList.contains('code-editor-fullscreen')) return;
+      saveWindowPrefs({
+        ...loadWindowPrefs(),
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+    },
+  });
+  // When another tool window surfaces while the editor floats, it should come
+  // above the editor; grabbing the editor raises it again (see mountRoot's
+  // mousedown handler). The listener is global and registered once in
+  // initCodeEditor via root._ceLowerEditor so it can't leak across re-opens.
+  root._ceLowerEditor = () => {
+    if (!root.classList.contains('code-editor-fullscreen')
+        && !root.classList.contains('modal-right-docked')
+        && !root.classList.contains('modal-left-docked')) {
+      root.style.zIndex = '250';
+    }
+  };
 }
 
 function mountRoot() {
@@ -397,29 +593,39 @@ function mountRoot() {
   root.className = 'code-editor-root code-editor-fullscreen';
   root.setAttribute('aria-label', 'Project code editor');
   root.innerHTML = `
+    <div class="code-editor-windowbar" id="ce-windowbar" title="Drag to move the editor window">
+      <div class="code-editor-window-title">
+        <span class="ce-window-dot" aria-hidden="true"></span>
+        <span class="ce-window-name" id="ce-window-name">Code editor</span>
+        <span class="ce-window-path" id="ce-window-path"></span>
+      </div>
+      <div class="code-editor-window-controls">
+        <button class="code-editor-action-btn" type="button" data-editor-action="dock-left" title="Dock left — editor beside chat (Cmd/Ctrl+Alt+←)" aria-label="Dock left">◧</button>
+        <button class="code-editor-action-btn" type="button" data-editor-action="dock-right" title="Dock right — editor beside chat (Cmd/Ctrl+Alt+→)" aria-label="Dock right">◨</button>
+        <button class="code-editor-action-btn" type="button" data-editor-action="minimize" title="Minimize to the dock (Cmd/Ctrl+Alt+M)" aria-label="Minimize"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="18" x2="19" y2="18"/></svg></button>
+        <button class="code-editor-action-btn" type="button" data-editor-action="fullscreen" title="Toggle fullscreen (F11)" aria-label="Toggle fullscreen">⛶</button>
+        <button class="code-editor-action-btn" type="button" data-editor-action="close" title="Close editor" aria-label="Close editor">✕</button>
+      </div>
+    </div>
     <div class="code-editor-toolbar">
       <div class="code-editor-tabs" id="code-editor-tabs" role="tablist" aria-label="Open files"></div>
       <div class="code-editor-breadcrumb" id="ce-breadcrumb" aria-label="File path"></div>
       <div class="code-editor-actions">
         <button class="code-editor-action-btn" type="button" data-editor-action="tree" aria-pressed="true" title="Hide files (Cmd/Ctrl+\\ or Cmd/Ctrl+Alt+F)">Files</button>
-        <button class="code-editor-action-btn" type="button" data-editor-action="tools" aria-pressed="true" title="Hide terminal and search (Cmd/Ctrl+Shift+J or Cmd/Ctrl+Alt+T)">Terminal</button>
+        <button class="code-editor-action-btn" type="button" data-editor-action="tools" aria-pressed="true" title="Show/hide the search panel (Cmd/Ctrl+Shift+J or Cmd/Ctrl+Alt+T)">Panels</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="ask-agent" disabled title="Select code to ask the agent about it">Ask agent</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="definition" title="Go to definition (F12)">Definition</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="references" title="Find references (Alt+F12)">References</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="completion" title="Check inline completion availability">Complete</button>
-        <button class="code-editor-action-btn" type="button" data-editor-action="preview" aria-pressed="false" disabled title="Preview the active Markdown or Typst file (Cmd/Ctrl+Alt+P)">Preview</button>
-        <button class="code-editor-action-btn" type="button" data-editor-action="web-preview" title="Open a validated HTTP(S) web preview (Cmd/Ctrl+Alt+W)">Web view</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="vim" aria-pressed="true" title="Toggle Vim mode (Cmd/Ctrl+Alt+V)">Vim</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="layout" aria-expanded="false" title="Editor layout and tab size (Cmd/Ctrl+Alt+L)">Layout</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="commands" title="Command palette (Cmd/Ctrl+K)">Command</button>
         <button class="code-editor-action-btn" type="button" data-editor-action="help" title="Keyboard shortcuts">?</button>
-        <button class="code-editor-action-btn" type="button" data-editor-action="fullscreen" title="Toggle fullscreen (F11)">⛶</button>
-        <button class="code-editor-action-btn" type="button" data-editor-action="close" title="Close editor">✕</button>
       </div>
     </div>
     <div class="code-editor-body">
       <aside class="code-editor-sidebar" aria-label="Project files">
-        <div class="code-editor-sidebar-header"><span>Files</span></div>
+        <div class="code-editor-sidebar-header"><span>Files</span><button id="ce-file-tree-expand" type="button" title="Expand every project folder">Expand all</button></div>
         <div class="code-editor-file-tree" id="code-editor-file-tree"></div>
       </aside>
       <main class="code-editor-main">
@@ -432,48 +638,12 @@ function mountRoot() {
           <span id="ce-status-position">Ln 1, Col 1</span>
         </div>
       </main>
-      <div id="code-editor-preview-slot" data-editor-panel-slot="preview" style="display:contents"></div>
     </div>
     <section class="code-editor-panels" aria-label="Project tools">
       <div class="code-editor-panel-tabs" role="tablist" aria-label="Project tools">
-        <button id="ce-panel-tab-terminal" class="ce-panel-tab" type="button" role="tab" aria-controls="ce-panel-terminal" data-editor-panel="terminal">Terminal</button>
         <button id="ce-panel-tab-search" class="ce-panel-tab" type="button" role="tab" aria-controls="ce-panel-search" data-editor-panel="search">Search</button>
-        <button id="ce-panel-tab-ai" class="ce-panel-tab" type="button" role="tab" aria-controls="ce-panel-ai" data-editor-panel="ai">AI</button>
-        <button class="ce-panel-tab" type="button" data-editor-panel-action="close-terminal" title="Close terminal session" aria-label="Close terminal session" style="margin-left:auto">Close terminal</button>
-      </div>
-      <div id="ce-panel-terminal" class="code-editor-panel-content" data-editor-panel-slot="terminal" role="tabpanel" aria-labelledby="ce-panel-tab-terminal" style="padding:0;overflow:hidden;position:relative;display:flex;flex-direction:row">
-        <div id="ce-terminal-host" style="flex:1;min-width:0;height:100%;position:relative"></div>
-        <div id="ce-terminal-sidebar" style="width:160px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;box-sizing:border-box">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--border);flex-shrink:0;height:32px;box-sizing:border-box">
-            <span style="font-size:10px;font-weight:600;opacity:0.6;text-transform:uppercase;letter-spacing:0.5px">Sessions</span>
-            <button id="ce-terminal-add" style="background:none;border:none;color:var(--fg);cursor:pointer;opacity:0.7;font-size:14px;padding:0 4px;line-height:1" title="Open new terminal">+</button>
-          </div>
-          <div id="ce-terminal-list" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;padding:4px 0"></div>
-        </div>
-        <div id="ce-terminal-status" role="status" aria-live="polite" style="position:absolute;left:8px;top:5px;font-size:10px;opacity:.65;pointer-events:none;z-index:10"></div>
       </div>
       <div id="ce-panel-search" class="code-editor-panel-content" data-editor-panel-slot="search" role="tabpanel" aria-labelledby="ce-panel-tab-search" hidden></div>
-      <div id="ce-panel-ai" class="code-editor-panel-content" data-editor-panel-slot="ai" role="tabpanel" aria-labelledby="ce-panel-tab-ai" hidden style="padding:0;overflow:hidden;position:relative;display:flex;flex-direction:row;height:100%">
-        <div style="flex:1;min-width:0;height:100%;display:flex;flex-direction:column;position:relative">
-          <div id="ce-ai-messages" style="flex:1;min-height:0;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:12px;font-size:12px;line-height:1.45;box-sizing:border-box"></div>
-          <div id="ce-ai-input-wrap" style="display:flex;flex-wrap:wrap;background:var(--panel);border-top:1px solid var(--border);padding:6px 8px;gap:6px;align-items:flex-end;flex-shrink:0;min-height:42px;height:auto;box-sizing:border-box">
-            <textarea id="ce-ai-textarea" placeholder="Ask AI about your code..." rows="1" style="flex:1 1 180px;min-width:120px;min-height:30px;max-height:140px;overflow-y:auto;resize:none;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:12px;outline:none;font-family:inherit;box-sizing:border-box;line-height:1.35"></textarea>
-            <button id="ce-ai-pick-element" type="button" style="padding:0 8px;height:30px;font-size:11px;background:var(--panel);border:1px solid var(--border);color:var(--fg);border-radius:4px;cursor:pointer;white-space:nowrap" title="Select an element from the webview">Pick element</button>
-            <select id="ce-ai-model" aria-label="AI model" title="Choose the model for editor chat" style="height:30px;max-width:150px;min-width:100px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:0 4px;font-size:11px;outline:none">
-              <option value="">Current model</option>
-            </select>
-            <button id="ce-ai-new" style="padding:0px 10px;height:30px;font-size:12px;display:flex;align-items:center;background:var(--panel);border:1px solid var(--border);color:var(--fg);border-radius:4px;cursor:pointer;font-weight:500;white-space:nowrap" title="Start new session">New Chat</button>
-            <button id="ce-ai-send" style="padding:0px 12px;height:30px;font-size:12px;display:flex;align-items:center;background:var(--panel);border:1px solid var(--border);color:var(--fg);border-radius:4px;cursor:pointer;font-weight:500" title="Send message">Send</button>
-          </div>
-        </div>
-        <div id="ce-ai-sidebar" style="width:160px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;box-sizing:border-box">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--border);flex-shrink:0;height:32px;box-sizing:border-box">
-            <span style="font-size:10px;font-weight:600;opacity:0.6;text-transform:uppercase;letter-spacing:0.5px">Sessions</span>
-            <button id="ce-ai-add" style="background:none;border:none;color:var(--fg);cursor:pointer;opacity:0.7;font-size:14px;padding:0 4px;line-height:1" title="Start new session">+</button>
-          </div>
-          <div id="ce-ai-session-list" style="display:flex;flex-direction:column;flex:1;overflow-y:auto;padding:4px 0"></div>
-        </div>
-      </div>
     </section>
     <div id="code-editor-panel-slots" hidden aria-label="Editor extension slots"></div>
     <div class="code-editor-layout-menu" id="ce-layout-menu" role="menu" hidden aria-label="Editor layout">
@@ -485,7 +655,11 @@ function mountRoot() {
         </select>
       </label>
       <button type="button" role="menuitem" data-editor-layout="tree">Hide files <kbd>⌘\</kbd></button>
-      <button type="button" role="menuitem" data-editor-layout="tools">Hide terminal <kbd>⌘⇧J</kbd></button>
+      <button type="button" role="menuitem" data-editor-layout="tools">Hide panels <kbd>⌘⇧J</kbd></button>
+      <button type="button" role="menuitem" data-editor-layout="dock-left">Dock left <kbd>⌘⌥←</kbd></button>
+      <button type="button" role="menuitem" data-editor-layout="dock-right">Dock right <kbd>⌘⌥→</kbd></button>
+      <button type="button" role="menuitem" data-editor-layout="minimize">Minimize <kbd>⌘⌥M</kbd></button>
+      <button type="button" role="menuitem" data-editor-layout="fullscreen">Toggle fullscreen <kbd>F11</kbd></button>
     </div>`;
   document.body.appendChild(root);
   state.root = root;
@@ -497,13 +671,41 @@ function mountRoot() {
   root.querySelector('[data-editor-action="definition"]')?.addEventListener('click', () => { void findSymbol('definition'); });
   root.querySelector('[data-editor-action="references"]')?.addEventListener('click', () => { void findSymbol('reference'); });
   root.querySelector('[data-editor-action="completion"]')?.addEventListener('click', () => { void checkInlineCompletion(); });
-  root.querySelector('[data-editor-action="preview"]')?.addEventListener('click', () => { void previewActiveDocument(); });
-  root.querySelector('[data-editor-action="web-preview"]')?.addEventListener('click', openWebPreview);
   root.querySelector('[data-editor-action="layout"]')?.addEventListener('click', toggleLayoutMenu);
   root.querySelector('[data-editor-action="commands"]')?.addEventListener('click', showCommandPalette);
   root.querySelector('[data-editor-action="help"]')?.addEventListener('click', showKeyboardHelp);
   root.querySelector('[data-editor-action="fullscreen"]')?.addEventListener('click', () => { void toggleFullscreen(); });
   root.querySelector('[data-editor-action="close"]')?.addEventListener('click', () => { void closeEditor(); });
+  root.querySelector('[data-editor-action="minimize"]')?.addEventListener('click', () => { Modals.minimize('code-editor-root'); });
+  root.querySelector('[data-editor-action="dock-left"]')?.addEventListener('click', () => toggleDock('left'));
+  root.querySelector('[data-editor-action="dock-right"]')?.addEventListener('click', () => toggleDock('right'));
+  root.addEventListener('mousedown', () => {
+    if (!root.classList.contains('code-editor-fullscreen')
+        && !root.classList.contains('modal-right-docked')
+        && !root.classList.contains('modal-left-docked')) {
+      root.style.zIndex = '300';
+    }
+  }, true);
+  root.querySelector('#ce-file-tree-expand')?.addEventListener('click', async () => {
+    const button = root.querySelector('#ce-file-tree-expand');
+    if (!state.tree || button?.disabled) return;
+    button.disabled = true;
+    try {
+      if (button.dataset.expanded === 'true') {
+        state.tree.collapseAll();
+        button.dataset.expanded = 'false';
+      } else {
+        button.textContent = 'Loading…';
+        await state.tree.expandAll();
+        button.dataset.expanded = 'true';
+      }
+    } catch (error) {
+      uiModule.showError?.(`Could not expand project files: ${error.message}`);
+    } finally {
+      button.disabled = false;
+      button.textContent = button.dataset.expanded === 'true' ? 'Collapse all' : 'Expand all';
+    }
+  });
   let dragOverlay = root.querySelector('#ce-drag-overlay');
   if (!dragOverlay) {
     dragOverlay = window.document.createElement('div');
@@ -597,66 +799,19 @@ function mountRoot() {
     }
   });
 
-  root.querySelector('[data-editor-panel-action="close-terminal"]')?.addEventListener('click', closeTerminalPanel);
-  root.querySelector('#ce-terminal-add')?.addEventListener('click', () => {
-    const newSession = createTerminalSession();
-    selectTerminalSession(newSession.id);
-  });
-
-  const triggerNewAiChat = () => {
-    window.document.dispatchEvent(new CustomEvent('start-chat', { detail: { projectId: state.context?.projectId } }));
-    const targetLog = getRootPart('#ce-ai-messages');
-    if (targetLog) targetLog.replaceChildren();
-    notice('Started a new chat session.');
-    getRootPart('#ce-ai-textarea')?.focus();
-    renderAiSessionList();
-  };
-
-  root.querySelector('#ce-ai-add')?.addEventListener('click', triggerNewAiChat);
-
-  const aiNew = root.querySelector('#ce-ai-new');
-  if (aiNew) {
-    aiNew.addEventListener('click', triggerNewAiChat);
-  }
-
-  const aiSend = root.querySelector('#ce-ai-send');
-  const aiTextarea = root.querySelector('#ce-ai-textarea');
-  const aiPickElement = root.querySelector('#ce-ai-pick-element');
-  if (aiPickElement) aiPickElement.addEventListener('click', pickWebviewElement);
-  const aiModel = root.querySelector('#ce-ai-model');
-  if (aiModel) {
-    aiModel.addEventListener('change', () => {
-      const option = aiModel.selectedOptions?.[0];
-      state.aiModel = aiModel.value;
-      state.aiEndpointUrl = option?.dataset.endpointUrl || '';
-      state.aiEndpointId = option?.dataset.endpointId || '';
-      persist();
-      void applyEditorAiModel();
-    });
-    void refreshEditorAiModels();
-  }
-  if (aiSend) aiSend.addEventListener('click', sendAiMessage);
-  if (aiTextarea) {
-    const resizeAiTextarea = () => {
-      aiTextarea.style.height = 'auto';
-      aiTextarea.style.height = `${Math.min(Math.max(aiTextarea.scrollHeight, 30), 140)}px`;
-    };
-    aiTextarea.addEventListener('input', resizeAiTextarea);
-    resizeAiTextarea();
-    aiTextarea.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendAiMessage();
-      }
-    });
-  }
   root.querySelector('#ce-tab-size')?.addEventListener('change', event => {
     setTabSize(Number(event.currentTarget.value));
   });
   root.querySelectorAll('[data-editor-layout]').forEach(button => {
     button.addEventListener('click', () => {
-      if (button.dataset.editorLayout === 'tree') toggleFileTree();
-      if (button.dataset.editorLayout === 'tools') toggleToolsPanel();
+      const action = button.dataset.editorLayout;
+      if (action === 'tree') toggleFileTree();
+      else if (action === 'tools') toggleToolsPanel();
+      else if (action === 'dock-left') toggleDock('left');
+      else if (action === 'dock-right') toggleDock('right');
+      else if (action === 'minimize') Modals.minimize('code-editor-root');
+      else if (action === 'fullscreen') void toggleFullscreen();
+      closeLayoutMenu();
     });
   });
   root.addEventListener('click', event => {
@@ -672,10 +827,11 @@ function mountRoot() {
       const shortcutActions = {
         KeyF: 'tree',
         KeyT: 'tools',
-        KeyP: 'preview',
-        KeyW: 'web-preview',
         KeyV: 'vim',
         KeyL: 'layout',
+        KeyM: 'minimize',
+        ArrowLeft: 'dock-left',
+        ArrowRight: 'dock-right',
       };
       const action = shortcutActions[event.code];
       const button = action ? getRootPart(`[data-editor-action="${action}"]`) : null;
@@ -704,20 +860,13 @@ function mountRoot() {
       toggleToolsPanel();
     } else if (!event.shiftKey && event.key.toLowerCase() === 'j') {
       event.preventDefault();
-      showPanel('terminal');
+      showPanel('search');
     } else if (event.altKey && event.key.toLowerCase() === 'a') {
       event.preventDefault();
       askAgentForSelection();
     }
   });
   return root;
-}
-
-function setTerminalStatus({ kind, message }) {
-  const status = getRootPart('#ce-terminal-status');
-  if (!status) return;
-  status.dataset.state = kind;
-  status.textContent = message;
 }
 
 function closeLayoutMenu() {
@@ -758,7 +907,7 @@ function applyActiveView() {
     root.classList.toggle('code-editor-tools-hidden', !state.toolsVisible);
   }
 
-  for (const name of ['terminal', 'search', 'ai']) {
+  for (const name of ['search']) {
     const panel = getRootPart(`#ce-panel-${name}`);
     if (!panel) continue;
     
@@ -770,80 +919,74 @@ function applyActiveView() {
     if (isThisVirtualActive) {
       main.appendChild(panel);
       panel.hidden = false;
-      panel.style.setProperty('display', name === 'search' ? 'block' : 'flex', 'important');
+      panel.style.removeProperty('display');
       panel.style.setProperty('flex', '1', 'important');
       panel.style.setProperty('height', '100%', 'important');
-      
-      if (name === 'terminal') {
-        const session = state.terminalSessions?.find(s => s.id === state.activeTerminalSessionId);
-        if (session && session.terminal) {
-          requestAnimationFrame(() => {
-            try { session.terminal.resize(); } catch (_) {}
-            try { session.terminal.focus(); } catch (_) {}
-          });
-        }
-      } else if (name === 'ai') {
-        startAiMirroring();
-        requestAnimationFrame(() => {
-          getRootPart('#ce-ai-textarea')?.focus();
-        });
-      }
     } else {
       const isActiveInBottom = state.activePanel === name && !isVirtual;
       panel.hidden = !isActiveInBottom;
       if (isActiveInBottom) {
-        panel.style.setProperty('display', name === 'search' ? 'block' : 'flex', 'important');
+        panel.style.removeProperty('display');
       } else {
         panel.style.setProperty('display', 'none', 'important');
       }
     }
   }
-
-  if (!isVirtual) {
-    stopAiMirroring();
-    if (state.activePanel === 'terminal') {
-      const session = state.terminalSessions?.find(s => s.id === state.activeTerminalSessionId);
-      requestAnimationFrame(() => {
-        try { session?.terminal?.resize(); } catch (_) {}
-      });
-    } else if (state.activePanel === 'ai') {
-      startAiMirroring();
-    }
-  }
 }
+
+let popupDragInitialized = false;
 
 function applyToolsPosition() {
   const panels = getRootPart('.code-editor-panels');
-  const body = getRootPart('.code-editor-body');
   const root = getRootPart('#code-editor-root');
-  if (!panels || !body || !root) return;
+  if (!panels || !root) return;
 
-  const isSide = state.toolsPosition === 'side';
-  if (isSide) {
-    if (panels.parentNode !== body) {
-      body.appendChild(panels);
-    }
-    panels.style.setProperty('width', '380px', 'important');
-    panels.style.setProperty('height', '100%', 'important');
-    panels.style.setProperty('border-top', 'none', 'important');
-    panels.style.setProperty('border-left', '1px solid var(--border)', 'important');
-  } else {
-    if (panels.parentNode !== root) {
-      root.appendChild(panels);
-    }
-    panels.style.removeProperty('width');
-    panels.style.removeProperty('height');
-    panels.style.removeProperty('border-top');
-    panels.style.removeProperty('border-left');
+  if (panels.parentNode !== root) {
+    root.appendChild(panels);
   }
   
-  requestAnimationFrame(() => {
-    state.terminalSessions?.forEach(s => {
-      if (s.terminal) {
-        try { s.terminal.resize(); } catch (_) {}
-      }
-    });
-  });
+  if (!popupDragInitialized) {
+    const header = getRootPart('.code-editor-panel-tabs');
+    if (header) {
+      popupDragInitialized = true;
+      let isDragging = false;
+      let startX = 0, startY = 0;
+      let initialX = 0, initialY = 0;
+
+      header.addEventListener('mousedown', (e) => {
+        if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        
+        const rect = panels.getBoundingClientRect();
+        const rootRect = root.getBoundingClientRect();
+        
+        initialX = rect.left - rootRect.left;
+        initialY = rect.top - rootRect.top;
+        
+        panels.style.width = rect.width + 'px';
+        panels.style.height = rect.height + 'px';
+        
+        e.preventDefault();
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        
+        panels.style.left = (initialX + dx) + 'px';
+        panels.style.top = (initialY + dy) + 'px';
+        panels.style.bottom = 'auto';
+        panels.style.right = 'auto';
+      });
+
+      window.addEventListener('mouseup', () => {
+        isDragging = false;
+      });
+    }
+  }
 }
 
 function syncLayoutPreferences() {
@@ -863,12 +1006,12 @@ function syncLayoutPreferences() {
     treeButton.setAttribute('aria-pressed', String(state.treeVisible));
   }
   if (toolsButton) {
-    toolsButton.textContent = state.toolsVisible ? 'Terminal' : 'Terminal off';
-    toolsButton.title = `${state.toolsVisible ? 'Hide' : 'Show'} terminal and search (Cmd/Ctrl+Shift+J)`;
+    toolsButton.textContent = state.toolsVisible ? 'Panels' : 'Panels off';
+    toolsButton.title = `${state.toolsVisible ? 'Hide' : 'Show'} the search panel (Cmd/Ctrl+Shift+J)`;
     toolsButton.setAttribute('aria-pressed', String(state.toolsVisible));
   }
   if (treeMenu) treeMenu.innerHTML = `${state.treeVisible ? 'Hide' : 'Show'} files <kbd>⌘\\</kbd>`;
-  if (toolsMenu) toolsMenu.innerHTML = `${state.toolsVisible ? 'Hide' : 'Show'} terminal <kbd>⌘⇧J</kbd>`;
+  if (toolsMenu) toolsMenu.innerHTML = `${state.toolsVisible ? 'Hide' : 'Show'} panels <kbd>⌘⇧J</kbd>`;
   if (tabSize) tabSize.value = String(state.tabSize);
   if (tabStatus) tabStatus.textContent = `Tabs: ${state.tabSize}`;
   applyToolsPosition();
@@ -900,11 +1043,10 @@ function toggleFileTree() {
 
 function toggleToolsPanel() {
   state.toolsVisible = !state.toolsVisible;
-  if (!state.toolsVisible) deactivateTerminal();
   syncLayoutPreferences();
   if (state.toolsVisible) showPanel(state.activePanel, { focus: false });
   persist();
-  notice(state.toolsVisible ? 'Terminal and search shown' : 'Terminal and search hidden');
+  notice(state.toolsVisible ? 'Search panel shown' : 'Search panel hidden');
 }
 
 function selectedCodeContext() {
@@ -1108,585 +1250,13 @@ async function checkInlineCompletion() {
   return false;
 }
 
-function previewKindForActiveDocument(document = state.documents.get(state.activePath)) {
-  const path = document?.path?.toLowerCase() || '';
-  if (path.endsWith('.md') || path.endsWith('.markdown')) return 'markdown';
-  if (path.endsWith('.typ')) return 'typst';
-  return null;
-}
-
-function previewDocument() {
-  const active = state.documents.get(state.activePath);
-  if (!active?.loaded || !state.context) return null;
-  return {
-    path: active.path,
-    content: active.content,
-    context: {
-      workspaceId: state.context.workspaceId,
-      projectId: state.context.projectId,
-    },
-  };
-}
-
-function updatePreviewAction() {
-  const button = getRootPart('[data-editor-action="preview"]');
-  if (!button) return;
-  const kind = previewKindForActiveDocument();
-  button.disabled = !kind;
-  button.title = kind
-    ? `Preview the active ${kind === 'typst' ? 'Typst' : 'Markdown'} file`
-    : 'Preview is available for Markdown and Typst files';
-  button.setAttribute('aria-pressed', String(!!state.preview?.panel && !state.preview.panel.element.hidden && state.preview.panel.mode !== 'web'));
-}
-
-function applyPreviewWidth(panel, width = state.previewWidth) {
-  if (!panel?.element) return;
-  if (!Number.isFinite(width)) {
-    panel.element.style.removeProperty('flex');
-    panel.element.style.removeProperty('width');
-    return;
-  }
-  panel.element.style.flex = `0 0 ${Math.round(width)}px`;
-  panel.element.style.width = `${Math.round(width)}px`;
-}
-
-function syncPreviewResizeHandle() {
-  const preview = state.preview;
-  if (!preview) return;
-  const panel = preview.panel;
-  if (!panel) { preview.resizeHandle.hidden = true; return; }
-  preview.resizeHandle.hidden = panel.element.hidden;
-}
-
-function wirePreviewResize(resizeHandle, panel) {
-  if (!resizeHandle || !panel) return;
-  const minimumWidth = 240;
-  
-  resizeHandle.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0 || panel.element.hidden || window.matchMedia('(max-width: 768px)').matches) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = panel.element.getBoundingClientRect().width;
-    const sidebar = getRootPart('.code-editor-sidebar');
-    const editorBody = getRootPart('.code-editor-body');
-    const maxWidth = Math.max(
-      minimumWidth,
-      (editorBody?.clientWidth || document.body.clientWidth) - (sidebar?.getBoundingClientRect().width || 0) - 320,
-    );
-    resizeHandle.classList.add('dragging');
-    resizeHandle.setPointerCapture?.(event.pointerId);
-    
-    const move = moveEvent => {
-      const nextWidth = Math.min(maxWidth, Math.max(minimumWidth, startWidth + startX - moveEvent.clientX));
-      state.previewWidth = nextWidth;
-      applyPreviewWidth(panel, nextWidth);
-    };
-    
-    const finish = () => {
-      resizeHandle.classList.remove('dragging');
-      try { resizeHandle.releasePointerCapture(event.pointerId); } catch (_) {}
-      resizeHandle.removeEventListener('pointermove', move);
-      resizeHandle.removeEventListener('pointerup', finish);
-      resizeHandle.removeEventListener('pointercancel', finish);
-      persist();
-    };
-    
-    resizeHandle.addEventListener('pointermove', move);
-    resizeHandle.addEventListener('pointerup', finish);
-    resizeHandle.addEventListener('pointercancel', finish);
-  });
-  
-  resizeHandle.addEventListener('dblclick', () => {
-    state.previewWidth = null;
-    applyPreviewWidth(panel, null);
-    persist();
-  });
-}
-
-function ensurePreviewPanel() {
-  if (state.preview?.panel) return state.preview.panel;
-  const slot = getRootPart('#code-editor-preview-slot');
-  if (!slot) return null;
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'editor-preview-resize-handle';
-  resizeHandle.hidden = true;
-  resizeHandle.setAttribute('role', 'separator');
-  resizeHandle.setAttribute('aria-label', 'Resize preview');
-  resizeHandle.setAttribute('aria-orientation', 'vertical');
-  slot.append(resizeHandle);
-  const panel = createPreviewPanel({
-    container: slot,
-    getActiveDocument: previewDocument,
-    onStatus: ({ state: previewState, message }) => {
-      syncPreviewResizeHandle();
-      if (previewState === 'error' || previewState === 'unavailable') notice(`Preview: ${message}`, 3200);
-    },
-    onClose: () => {
-      syncPreviewResizeHandle();
-      updatePreviewAction();
-    },
-  });
-  state.preview = { panel, resizeHandle };
-  applyPreviewWidth(panel);
-  wirePreviewResize(resizeHandle, panel);
-  return panel;
-}
-
-async function previewActiveDocument() {
-  const active = state.documents.get(state.activePath);
-  const kind = previewKindForActiveDocument(active);
-  if (!kind) {
-    updatePreviewAction();
-    notice('Preview is available for Markdown and Typst files.');
-    return false;
-  }
-  const documentValue = previewDocument();
-  if (!documentValue) {
-    notice('Open a saved, project-bound file before previewing it.');
-    return false;
-  }
-  const panel = ensurePreviewPanel();
-  if (!panel) return false;
-  await panel.renderPreview(documentValue);
-  syncPreviewResizeHandle();
-  updatePreviewAction();
-  return true;
-}
-
-async function openWebPreview() {
-  const value = await uiModule.styledPrompt('Enter local port number (e.g., 5020 or 3000):', {
-    title: 'Web Preview',
-    defaultValue: '5020',
-    placeholder: '5020',
-    confirmText: 'Open',
-    cancelText: 'Cancel'
-  });
-  if (value === null) return false;
-  let url = value.trim();
-  if (/^\d+$/.test(url)) {
-    url = `${window.location.protocol}//${window.location.hostname}:${url}/`;
-  }
-  const panel = ensurePreviewPanel();
-  if (!panel) return false;
-  // Provision the bridge in the active project before loading its web app.
-  // This is idempotent and keeps the webview feature working across projects
-  // without requiring users to edit each app's template by hand.
-  if (state.context?.workspaceId && state.context?.projectId) {
-    try {
-      await fetch(
-        `${API_ROOT}/${encodeURIComponent(state.context.workspaceId)}/project/${encodeURIComponent(state.context.projectId)}/webview-bridge/provision`,
-        { method: 'POST', credentials: 'same-origin' },
-      );
-    } catch (_) {
-      // A bridge failure must not prevent the normal web preview from opening.
-    }
-  }
-  panel.openWebPreview(url);
-  syncPreviewResizeHandle();
-  updatePreviewAction();
-  return true;
-}
-
-async function refreshPreviewForActiveDocument() {
-  const panel = state.preview?.panel;
-  if (!panel || panel.element.hidden || panel.mode === 'web') return;
-  const active = state.documents.get(state.activePath);
-  const kind = previewKindForActiveDocument(active);
-  if (!kind) {
-    await panel.renderPreview(null);
-    updatePreviewAction();
-    return;
-  }
-  const documentValue = previewDocument();
-  if (documentValue) await panel.renderPreview(documentValue);
-  updatePreviewAction();
-}
-
-function queueMarkdownPreview(document) {
-  if (document.path !== state.activePath || previewKindForActiveDocument(document) !== 'markdown') return;
-  const panel = state.preview?.panel;
-  if (!panel || panel.element.hidden || panel.mode !== 'markdown') return;
-  if (document.content.length > MAX_LIVE_EDITOR_CHARS) {
-    notice('Live preview paused for large files; use Preview manually after saving.', 4200);
-    return;
-  }
-  clearTimeout(state.previewTimer);
-  state.previewTimer = setTimeout(() => {
-    state.previewTimer = null;
-    const current = state.documents.get(state.activePath);
-    if (current?.path === document.path && panel.mode === 'markdown' && !panel.element.hidden) {
-      void panel.renderPreview(previewDocument());
-    }
-  }, 180);
-}
-
-function renderTerminalList() {
-  const listContainer = getRootPart('#ce-terminal-list');
-  if (!listContainer) return;
-  listContainer.replaceChildren();
-
-  state.terminalSessions.forEach(session => {
-    const item = document.createElement('div');
-    item.style.display = 'flex';
-    item.style.alignItems = 'center';
-    item.style.justifyContent = 'space-between';
-    item.style.padding = '6px 10px';
-    item.style.margin = '2px 6px';
-    item.style.borderRadius = '4px';
-    item.style.fontSize = '12px';
-    item.style.cursor = 'pointer';
-    item.style.userSelect = 'none';
-
-    const isActive = session.id === state.activeTerminalSessionId;
-    if (isActive) {
-      item.style.background = 'color-mix(in srgb, var(--accent, #56c7d9) 15%, var(--panel))';
-      item.style.color = 'var(--accent, #56c7d9)';
-      item.style.fontWeight = '600';
-    } else {
-      item.style.background = 'none';
-      item.style.color = 'var(--fg)';
-      item.style.opacity = '0.8';
-    }
-
-    item.addEventListener('mouseenter', () => {
-      if (!isActive) {
-        item.style.background = 'color-mix(in srgb, var(--fg) 5%, transparent)';
-        item.style.opacity = '1';
-      }
-    });
-    item.addEventListener('mouseleave', () => {
-      if (!isActive) {
-        item.style.background = 'none';
-        item.style.opacity = '0.8';
-      }
-    });
-
-    const leftPart = document.createElement('div');
-    leftPart.style.display = 'flex';
-    leftPart.style.alignItems = 'center';
-    leftPart.style.gap = '8px';
-    leftPart.style.overflow = 'hidden';
-
-    const icon = document.createElement('span');
-    icon.style.opacity = '0.7';
-    icon.style.fontFamily = 'monospace';
-    icon.style.fontSize = '12px';
-    icon.textContent = '❯_';
-
-    const nameSpan = document.createElement('span');
-    nameSpan.textContent = session.name;
-    nameSpan.style.whiteSpace = 'nowrap';
-    nameSpan.style.overflow = 'hidden';
-    nameSpan.style.textOverflow = 'ellipsis';
-
-    leftPart.append(icon, nameSpan);
-    item.append(leftPart);
-
-    if (state.terminalSessions.length > 1) {
-      const closeBtn = document.createElement('button');
-      closeBtn.textContent = '✕';
-      closeBtn.style.background = 'none';
-      closeBtn.style.border = 'none';
-      closeBtn.style.color = 'inherit';
-      closeBtn.style.cursor = 'pointer';
-      closeBtn.style.opacity = '0.4';
-      closeBtn.style.fontSize = '10px';
-      closeBtn.style.padding = '2px 4px';
-
-      closeBtn.addEventListener('mouseenter', () => closeBtn.style.opacity = '1');
-      closeBtn.addEventListener('mouseleave', () => closeBtn.style.opacity = '0.4');
-      closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        killTerminalSession(session.id);
-      });
-      item.append(closeBtn);
-    }
-
-    item.addEventListener('click', () => {
-      selectTerminalSession(session.id);
-    });
-
-    listContainer.append(item);
-  });
-}
-
-function renderAiSessionList() {
-  const listContainer = getRootPart('#ce-ai-session-list');
-  if (!listContainer) return;
-  listContainer.replaceChildren();
-
-  const sessionsModule = window.sessionModule;
-  if (!sessionsModule || !sessionsModule.getSessions) return;
-
-  const rawSessions = sessionsModule.getSessions() || [];
-  const activeProjectId = state.context?.projectId;
-  const currentSessionId = sessionsModule.getCurrentSessionId?.();
-
-  let chatSessions = rawSessions.filter(s =>
-    s && !s.archived && s.folder !== 'Assistant' && s.folder !== 'Tasks' &&
-    (s.name || '').trim() !== 'Nobody' && (s.name || '').trim() !== 'Incognito'
-  );
-
-  if (activeProjectId) {
-    const projSessions = chatSessions.filter(s => s.project_id === activeProjectId);
-    if (projSessions.length > 0) {
-      chatSessions = projSessions;
-    }
-  }
-
-  if (chatSessions.length === 0) {
-    const emptyState = document.createElement('div');
-    emptyState.style.padding = '8px 10px';
-    emptyState.style.fontSize = '11px';
-    emptyState.style.opacity = '0.5';
-    emptyState.textContent = 'No sessions';
-    listContainer.append(emptyState);
-    return;
-  }
-
-  chatSessions.forEach(session => {
-    const item = document.createElement('div');
-    item.style.display = 'flex';
-    item.style.alignItems = 'center';
-    item.style.justifyContent = 'space-between';
-    item.style.padding = '6px 10px';
-    item.style.margin = '2px 6px';
-    item.style.borderRadius = '4px';
-    item.style.fontSize = '12px';
-    item.style.cursor = 'pointer';
-    item.style.userSelect = 'none';
-
-    const isActive = String(session.id) === String(currentSessionId);
-    if (isActive) {
-      item.style.background = 'color-mix(in srgb, var(--accent, #56c7d9) 15%, var(--panel))';
-      item.style.color = 'var(--accent, #56c7d9)';
-      item.style.fontWeight = '600';
-    } else {
-      item.style.background = 'none';
-      item.style.color = 'var(--fg)';
-      item.style.opacity = '0.8';
-    }
-
-    item.addEventListener('mouseenter', () => {
-      if (!isActive) {
-        item.style.background = 'color-mix(in srgb, var(--fg) 5%, transparent)';
-        item.style.opacity = '1';
-      }
-    });
-    item.addEventListener('mouseleave', () => {
-      if (!isActive) {
-        item.style.background = 'none';
-        item.style.opacity = '0.8';
-      }
-    });
-
-    const leftPart = document.createElement('div');
-    leftPart.style.display = 'flex';
-    leftPart.style.alignItems = 'center';
-    leftPart.style.gap = '8px';
-    leftPart.style.overflow = 'hidden';
-
-    const icon = document.createElement('span');
-    icon.style.opacity = '0.7';
-    icon.style.fontSize = '12px';
-    icon.textContent = '💬';
-
-    const nameSpan = document.createElement('span');
-    let titleText = session.name || session.first_message || 'Untitled Chat';
-    nameSpan.textContent = titleText;
-    nameSpan.style.whiteSpace = 'nowrap';
-    nameSpan.style.overflow = 'hidden';
-    nameSpan.style.textOverflow = 'ellipsis';
-    nameSpan.title = titleText;
-
-    leftPart.append(icon, nameSpan);
-    item.append(leftPart);
-
-    if (chatSessions.length > 1) {
-      const closeBtn = document.createElement('button');
-      closeBtn.textContent = '✕';
-      closeBtn.style.background = 'none';
-      closeBtn.style.border = 'none';
-      closeBtn.style.color = 'inherit';
-      closeBtn.style.cursor = 'pointer';
-      closeBtn.style.opacity = '0.4';
-      closeBtn.style.fontSize = '10px';
-      closeBtn.style.padding = '2px 4px';
-
-      closeBtn.addEventListener('mouseenter', () => closeBtn.style.opacity = '1');
-      closeBtn.addEventListener('mouseleave', () => closeBtn.style.opacity = '0.4');
-      closeBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        try {
-          await fetch(`/api/session/${session.id}`, { method: 'DELETE' });
-        } catch (_) {}
-        if (sessionsModule.loadSessions) {
-          await sessionsModule.loadSessions();
-        }
-        renderAiSessionList();
-      });
-      item.append(closeBtn);
-    }
-
-    item.addEventListener('click', async () => {
-      if (String(session.id) === String(currentSessionId)) return;
-      if (sessionsModule.selectSession) {
-        await sessionsModule.selectSession(session.id);
-      } else {
-        window.document.dispatchEvent(new CustomEvent('select-chat', { detail: { sessionId: session.id } }));
-      }
-      renderAiSessionList();
-      syncAiMessages();
-    });
-
-    listContainer.append(item);
-  });
-}
-
-function selectTerminalSession(sessionId) {
-  state.activeTerminalSessionId = sessionId;
-  persist();
-  renderTerminalList();
-
-  const host = getRootPart('#ce-terminal-host');
-  if (!host) return;
-
-  state.terminalSessions.forEach(session => {
-    if (session.container) {
-      session.container.style.display = session.id === sessionId ? 'block' : 'none';
-    }
-  });
-
-  const activeSession = state.terminalSessions.find(s => s.id === sessionId);
-  if (activeSession && !activeSession.terminal) {
-    initTerminalSession(activeSession);
-  } else if (activeSession && activeSession.terminal) {
-    activeSession.terminal.refresh();
-    activeSession.terminal.focus();
-  }
-}
-
-function initTerminalSession(session) {
-  const host = getRootPart('#ce-terminal-host');
-  if (!host) return;
-
-  const container = document.createElement('div');
-  container.className = 'ce-terminal-session-container';
-  container.style.width = '100%';
-  container.style.height = '100%';
-  container.style.display = session.id === state.activeTerminalSessionId ? 'block' : 'none';
-  host.append(container);
-  session.container = container;
-
-  const terminalContext = { ...state.context, terminalSessionId: session.id };
-  const terminal = new ProjectTerminal(container, terminalContext, {
-    onState: (tsState) => {
-      if (tsState.kind === 'init' && tsState.shell) {
-        session.name = tsState.shell;
-        persist();
-        renderTerminalList();
-      }
-      if (session.id === state.activeTerminalSessionId) {
-        setTerminalStatus(tsState);
-      }
-    }
-  });
-  session.terminal = terminal;
-
-  try {
-    terminal.open();
-  } catch (error) {
-    session.terminal = null;
-    container.textContent = `Could not start terminal: ${error.message}`;
-  }
-}
-
-function createTerminalSession(name = null) {
-  const id = `${state.context.projectId}-terminal-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-  const index = state.terminalSessions.length + 1;
-  const sessionName = name || `Terminal ${index}`;
-  const session = { id, name: sessionName, terminal: null, container: null };
-  state.terminalSessions.push(session);
-  persist();
-  return session;
-}
-
-function killTerminalSession(sessionId) {
-  const index = state.terminalSessions.findIndex(s => s.id === sessionId);
-  if (index === -1) return;
-
-  const session = state.terminalSessions[index];
-  if (session.terminal) {
-    try {
-      session.terminal._send({ type: 'kill' });
-    } catch (_) {}
-    session.terminal.dispose();
-  }
-  if (session.container) {
-    session.container.remove();
-  }
-
-  state.terminalSessions.splice(index, 1);
-
-  if (state.activeTerminalSessionId === sessionId) {
-    const nextActive = state.terminalSessions[Math.max(0, index - 1)];
-    state.activeTerminalSessionId = nextActive ? nextActive.id : null;
-  }
-
-  persist();
-  if (state.activeTerminalSessionId) {
-    selectTerminalSession(state.activeTerminalSessionId);
-  }
-}
-
-function ensureTerminal() {
-  if (!state.context) return null;
-
-  if (state.terminalSessions.length === 0) {
-    createTerminalSession();
-  }
-
-  if (!state.activeTerminalSessionId || !state.terminalSessions.some(s => s.id === state.activeTerminalSessionId)) {
-    state.activeTerminalSessionId = state.terminalSessions[0].id;
-  }
-
-  renderTerminalList();
-
-  state.terminalSessions.forEach(session => {
-    if (!session.container) {
-      initTerminalSession(session);
-    }
-  });
-
-  const activeSession = state.terminalSessions.find(s => s.id === state.activeTerminalSessionId);
-  return activeSession?.terminal || null;
-}
-
-function deactivateTerminal() {
-  state.terminalSessions.forEach(session => {
-    if (session.terminal) {
-      session.terminal.dispose();
-      session.terminal = null;
-    }
-    session.container = null;
-  });
-  const host = getRootPart('#ce-terminal-host');
-  if (host) host.replaceChildren();
-}
-
-function closeTerminalPanel() {
-  if (state.toolsVisible) {
-    toggleToolsPanel();
-  }
-}
-
 function showPanel(name, { focus = true } = {}) {
-  if (!['terminal', 'search', 'ai'].includes(name) || !state.panels) return null;
-  
+  if (name !== 'search' || !state.panels) return null;
+
   const isVirtualActive = state.activePath?.startsWith('virtual://');
   if (isVirtualActive) {
-    void openAt(`virtual://${name}`);
-    return getRootPart(`[data-editor-panel-slot="${name}"]`);
+    void openAt('virtual://search');
+    return getRootPart('[data-editor-panel-slot="search"]');
   }
 
   if (!state.toolsVisible) {
@@ -1694,369 +1264,24 @@ function showPanel(name, { focus = true } = {}) {
     syncLayoutPreferences();
   }
   state.activePanel = name;
-  for (const panelName of ['terminal', 'search', 'ai']) {
-    const panel = getRootPart(`#ce-panel-${panelName}`);
-    const tab = getRootPart(`#ce-panel-tab-${panelName}`);
-    const active = panelName === name;
-    if (panel) {
-      panel.hidden = !active;
-      if (active) {
-        if (panelName === 'terminal' || panelName === 'ai') {
-          panel.style.setProperty('display', 'flex', 'important');
-        } else {
-          panel.style.removeProperty('display');
-        }
-      } else {
-        panel.style.setProperty('display', 'none', 'important');
-      }
-    }
-    if (tab) {
-      tab.classList.toggle('active', active);
-      tab.setAttribute('aria-selected', String(active));
-      tab.tabIndex = active ? 0 : -1;
-    }
+  const panel = getRootPart('#ce-panel-search');
+  const tab = getRootPart('#ce-panel-tab-search');
+  const active = true;
+  if (panel) {
+    panel.hidden = !active;
+    if (active) panel.style.removeProperty('display');
+    else panel.style.setProperty('display', 'none', 'important');
   }
-  if (name !== 'ai') {
-    stopAiMirroring();
+  if (tab) {
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
   }
-  if (name === 'terminal') {
-    const terminal = ensureTerminal();
-    requestAnimationFrame(() => {
-      terminal?.refresh();
-      if (focus) terminal?.focus();
-    });
-  } else if (name === 'ai') {
-    startAiMirroring();
-    renderAiSessionList();
-    if (focus) {
-      requestAnimationFrame(() => {
-        const textarea = getRootPart('#ce-ai-textarea');
-        if (textarea) textarea.focus();
-      });
-    }
-  } else if (focus) {
-    requestAnimationFrame(() => state.panels?.search?.focus());
-  }
+  if (focus) requestAnimationFrame(() => state.panels?.search?.focus());
   applyActiveView();
   persist();
-  emit('panel-request', { panel: name, slot: getRootPart(`[data-editor-panel-slot="${name}"]`) });
-  return getRootPart(`[data-editor-panel-slot="${name}"]`);
-}
-
-function startAiMirroring() {
-  const sourceLog = document.getElementById('chat-history');
-  const targetLog = getRootPart('#ce-ai-messages');
-  if (!sourceLog || !targetLog) return;
-
-  syncAiMessages();
-
-  if (aiMirrorObserver) aiMirrorObserver.disconnect();
-  aiMirrorObserver = new MutationObserver(() => {
-    syncAiMessages();
-  });
-  aiMirrorObserver.observe(sourceLog, { childList: true, subtree: true, characterData: true });
-}
-
-function stopAiMirroring() {
-  if (aiMirrorObserver) {
-    aiMirrorObserver.disconnect();
-    aiMirrorObserver = null;
-  }
-}
-
-function syncAiMessages() {
-  const sourceLog = document.getElementById('chat-history');
-  const targetLog = getRootPart('#ce-ai-messages');
-  if (!sourceLog || !targetLog) return;
-
-  const messages = Array.from(sourceLog.querySelectorAll('.msg'));
-  targetLog.innerHTML = '';
-
-  messages.forEach(msg => {
-    const isUser = msg.classList.contains('msg-user');
-    const isAi = msg.classList.contains('msg-ai');
-    const bodyEl = msg.querySelector('.body');
-    if (!bodyEl) return;
-    
-    const bubble = document.createElement('div');
-    bubble.style.padding = '6px 10px';
-    bubble.style.borderRadius = '6px';
-    bubble.style.maxWidth = '85%';
-    bubble.style.wordBreak = 'break-word';
-    bubble.style.fontSize = '12px';
-    
-    if (isUser) {
-      bubble.style.alignSelf = 'flex-end';
-      bubble.style.background = 'var(--accent, #58a6ff)';
-      bubble.style.color = '#fff';
-      bubble.textContent = bodyEl.textContent;
-    } else if (isAi) {
-      bubble.style.alignSelf = 'flex-start';
-      bubble.style.background = 'var(--panel)';
-      bubble.style.border = '1px solid var(--border)';
-      bubble.style.color = 'var(--fg)';
-      bubble.innerHTML = bodyEl.innerHTML;
-    } else {
-      bubble.style.alignSelf = 'center';
-      bubble.style.background = 'rgba(236, 106, 92, 0.15)';
-      bubble.style.border = '1px solid var(--accent, #ec6a5c)';
-      bubble.style.color = 'var(--accent, #ec6a5c)';
-      bubble.style.fontSize = '11px';
-      bubble.textContent = bodyEl.textContent;
-    }
-
-    const row = document.createElement('div');
-    row.style.display = 'flex';
-    row.style.flexDirection = 'column';
-    row.style.alignItems = isUser ? 'flex-end' : (isAi ? 'flex-start' : 'center');
-    row.style.width = '100%';
-    row.style.margin = '4px 0';
-    row.appendChild(bubble);
-
-    targetLog.appendChild(row);
-  });
-
-  targetLog.scrollTop = targetLog.scrollHeight;
-}
-
-function editorAiModelSelect() {
-  return getRootPart('#ce-ai-model');
-}
-
-function populateEditorAiModels() {
-  const select = editorAiModelSelect();
-  if (!select) return;
-  const previous = state.aiModel;
-  const currentSession = window.sessionModule?.getSessions?.().find(
-    session => String(session.id) === String(window.sessionModule?.getCurrentSessionId?.()),
-  );
-  if (!state.aiModel && currentSession?.model) {
-    state.aiModel = currentSession.model;
-    state.aiEndpointUrl = currentSession.endpoint_url || '';
-    state.aiEndpointId = currentSession.endpoint_id || '';
-  }
-
-  select.replaceChildren();
-  const currentOption = document.createElement('option');
-  currentOption.value = '';
-  currentOption.textContent = state.aiModel ? 'Selected model' : 'Current model';
-  select.appendChild(currentOption);
-
-  const items = window.modelsModule?.getCachedItems?.() || [];
-  const seen = new Set();
-  for (const item of items) {
-    if (item?.model_type === 'image') continue;
-    const models = (item?.models || []).concat(item?.models_extra || []);
-    const displays = (item?.models_display || []).concat(item?.models_extra_display || []);
-    models.forEach((modelId, index) => {
-      const key = `${item.url || ''}\n${modelId}`;
-      if (!modelId || seen.has(key)) return;
-      seen.add(key);
-      const option = document.createElement('option');
-      option.value = modelId;
-      option.textContent = displays[index] || String(modelId).split('/').pop();
-      option.title = `${modelId}${item.endpoint_name ? ` — ${item.endpoint_name}` : ''}`;
-      option.dataset.endpointUrl = item.url || '';
-      option.dataset.endpointId = item.endpoint_id || '';
-      select.appendChild(option);
-    });
-  }
-
-  if (state.aiModel && !Array.from(select.options).some(option => option.value === state.aiModel)) {
-    const option = document.createElement('option');
-    option.value = state.aiModel;
-    option.textContent = `${String(state.aiModel).split('/').pop()} (unavailable)`;
-    option.dataset.endpointUrl = state.aiEndpointUrl;
-    option.dataset.endpointId = state.aiEndpointId;
-    select.appendChild(option);
-  }
-  select.value = state.aiModel || '';
-  if (previous !== state.aiModel) persist();
-}
-
-async function refreshEditorAiModels() {
-  try {
-    if (window.modelsModule?.refreshModels) await window.modelsModule.refreshModels(false);
-  } catch (_) { /* The selector still works with the current session model. */ }
-  populateEditorAiModels();
-}
-
-async function applyEditorAiModel() {
-  const modelId = state.aiModel;
-  if (!modelId || !state.aiEndpointUrl || !window.sessionModule) return true;
-  const sessionModule = window.sessionModule;
-  const sessionId = sessionModule.getCurrentSessionId?.();
-  if (!sessionId) {
-    sessionModule.createDirectChat?.(state.aiEndpointUrl, modelId, state.aiEndpointId || undefined);
-    notice(`Using ${String(modelId).split('/').pop()}`);
-    return true;
-  }
-  const session = sessionModule.getSessions?.().find(item => String(item.id) === String(sessionId));
-  if (session?.model === modelId && (session.endpoint_url || '') === state.aiEndpointUrl) return true;
-  const form = new FormData();
-  form.append('model', modelId);
-  form.append('endpoint_url', state.aiEndpointUrl);
-  if (state.aiEndpointId) form.append('endpoint_id', state.aiEndpointId);
-  try {
-    const response = await fetch(`/api/session/${encodeURIComponent(sessionId)}`, {
-      method: 'PATCH', body: form, credentials: 'same-origin',
-    });
-    if (!response.ok) throw new Error(`Model update failed (${response.status})`);
-    if (session) {
-      session.model = modelId;
-      session.endpoint_url = state.aiEndpointUrl;
-      session.endpoint_id = state.aiEndpointId;
-    }
-    notice(`Using ${String(modelId).split('/').pop()}`);
-    return true;
-  } catch (error) {
-    notice(error.message || 'Could not change model', 3000);
-    return false;
-  }
-}
-
-const _WEBVIEW_SNAPSHOT_TYPE = 'astercaeser-webview-snapshot';
-const _WEBVIEW_SNAPSHOT_REQUEST_TYPE = 'astercaeser-webview-snapshot-request';
-const _WEBVIEW_ELEMENT_SELECTED_TYPE = 'astercaeser-webview-element-selected';
-// Snapshots older than this are treated as stale: the URL is still appended,
-// but the content is dropped so the agent doesn't read an outdated page.
-const _WEBVIEW_SNAPSHOT_MAX_AGE_MS = 30_000;
-
-// The web preview iframe is cross-origin, so the parent cannot read its DOM.
-// Pages that embed the AsterCaeser bridge script (base.html of the previewed
-// app) postMessage their text content up; we cache the latest one and append
-// it to the agent context when the user asks about the webview.
-function installWebviewSnapshotBridge() {
-  window.addEventListener('message', event => {
-    const data = event.data;
-    if (!data || typeof data !== 'object') return;
-    const frame = document.querySelector('.editor-web-preview-frame');
-    if (!frame || event.source !== frame.contentWindow) return;
-    if (data.type === _WEBVIEW_ELEMENT_SELECTED_TYPE) {
-      if (!data.element || typeof data.element !== 'object') return;
-      state.webviewElementSelection = data.element;
-      window.dispatchEvent(new CustomEvent('astercaeser:webview-element-selected', { detail: data.element }));
-      return;
-    }
-    if (data.type !== _WEBVIEW_SNAPSHOT_TYPE) return;
-    if (typeof data.text !== 'string' || !data.text.trim()) return;
-    state.webviewSnapshot = {
-      url: typeof data.url === 'string' ? data.url : frame.src,
-      title: typeof data.title === 'string' ? data.title : '',
-      text: data.text.slice(0, 40_000),
-      elements: Array.isArray(data.elements) ? data.elements.slice(0, 300) : [],
-      at: Date.now(),
-    };
-    window.dispatchEvent(new CustomEvent('astercaeser:webview-snapshot'));
-  });
-}
-
-function pickWebviewElement() {
-  const frame = document.querySelector('.editor-web-preview-frame');
-  if (!frame || !frame.isConnected) {
-    notice('Open a webview before selecting an element.', 3000);
-    return;
-  }
-  try {
-    frame.contentWindow.postMessage({ type: 'astercaeser-webview-select-element' }, '*');
-    notice('Click an element in the webview…', 3000);
-  } catch (_) {
-    notice('Could not start webview element selection.', 3000);
-  }
-}
-
-window.addEventListener('astercaeser:webview-element-selected', event => {
-  const textarea = getRootPart('#ce-ai-textarea');
-  const element = event.detail;
-  if (!textarea || !element) return;
-  const snippet = `Selected web element:\n${JSON.stringify(element, null, 2)}`;
-  textarea.value = textarea.value.trim() ? `${textarea.value.trim()}\n\n${snippet}` : snippet;
-  textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  textarea.focus();
-  notice('Element added to the AI message.');
-});
-
-async function webviewContextSuffix() {
-  const frame = document.querySelector('.editor-web-preview-frame');
-  if (!frame || !frame.src || !frame.isConnected) return '';
-  let suffix = `\n\n[Context: The active webview is loaded with URL: ${frame.src}]`;
-  // Same-origin previews can be read immediately. Cross-origin previews use
-  // the opt-in postMessage bridge below instead of attempting to bypass the
-  // browser's frame security boundary.
-  try {
-    const bodyText = frame.contentDocument?.body?.innerText?.trim();
-    if (bodyText) {
-      const title = frame.contentDocument.title ? `${frame.contentDocument.title} — ` : '';
-      suffix += `\n[Live webview content — use this data directly; do not use Chrome or web_fetch for this page: ${title}${bodyText.slice(0, 40_000)}]`;
-      return suffix;
-    }
-  } catch (_) { /* Cross-origin frame: use the message bridge. */ }
-  // Always ping the page for a fresh snapshot: postMessage is asynchronous,
-  // so this one lands in time for the NEXT message; the cached one below
-  // covers the current message.
-  try {
-    frame.contentWindow.postMessage({ type: _WEBVIEW_SNAPSHOT_REQUEST_TYPE }, '*');
-  } catch (_) {}
-  // Wait for the bridge on the first request as well as subsequent requests.
-  // Without this small handshake, the prompt was submitted before the
-  // cross-origin iframe had time to return its snapshot.
-  await new Promise(resolve => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener('astercaeser:webview-snapshot', finish);
-      resolve();
-    };
-    window.addEventListener('astercaeser:webview-snapshot', finish, { once: true });
-    setTimeout(finish, 500);
-  });
-  const snap = state.webviewSnapshot;
-  if (!snap || !snap.text) return suffix;
-  if (Date.now() - snap.at > _WEBVIEW_SNAPSHOT_MAX_AGE_MS) return suffix;
-  const samePage = snap.url === frame.src
-    || snap.url.startsWith(frame.src)
-    || (snap.url.endsWith('/') && frame.src.startsWith(snap.url));
-  if (!samePage) return suffix;
-  const title = snap.title ? `${snap.title} — ` : '';
-  const elements = Array.isArray(snap.elements) && snap.elements.length
-    ? `\n[Visible webview elements:\n${JSON.stringify(snap.elements)}]`
-    : '';
-  suffix += `\n[Live webview content — use this data directly; do not use Chrome or web_fetch for this page: ${title}${snap.text}]${elements}`;
-  return suffix;
-}
-
-async function sendAiMessage() {
-  const textarea = getRootPart('#ce-ai-textarea');
-  if (!textarea) return;
-  let val = textarea.value.trim();
-  if (!val) return;
-  const visibleMessage = val;
-
-  // If a webview frame is active and loaded, append the URL + the page's
-  // text snapshot (via the postMessage bridge) as context for the agent.
-  const webviewContext = await webviewContextSuffix();
-  if (webviewContext) {
-    val += `\n\n[ASTERCAESER_WEBVIEW_CONTEXT]\n${webviewContext}\n[/ASTERCAESER_WEBVIEW_CONTEXT]`;
-  }
-
-  const mainInput = document.getElementById('message');
-  const sendBtn = document.querySelector('.send-btn') || document.getElementById('submit');
-  if (!mainInput || !sendBtn) {
-    notice('Chat interface is not ready.');
-    return;
-  }
-
-  if (state.aiModel && !(await applyEditorAiModel())) return;
-
-  mainInput.value = val;
-  // The full context is sent to the model, but the ordinary chat renderer
-  // should show only what the user typed.
-  mainInput.dataset.astercaeserDisplayMessage = visibleMessage;
-  mainInput.dispatchEvent(new Event('input', { bubbles: true }));
-  textarea.value = '';
-  textarea.style.height = '30px';
-  sendBtn.click();
+  emit('panel-request', { panel: name, slot: getRootPart('[data-editor-panel-slot="search"]') });
+  return getRootPart('[data-editor-panel-slot="search"]');
 }
 
 async function saveAllOpenDocuments() {
@@ -2090,7 +1315,7 @@ function mountPanels() {
       onFilesChanged: refreshFilesAfterReplace,
     }).mount()
     : null;
-  state.panels = { terminal: null, search };
+  state.panels = { search };
   if (state.toolsVisible) showPanel(state.activePanel, { focus: false });
 }
 
@@ -2174,14 +1399,8 @@ function persist() {
       tabSize: state.tabSize,
       treeVisible: state.treeVisible,
       toolsVisible: state.toolsVisible,
-      previewWidth: state.previewWidth,
       activePanel: state.activePanel,
-      terminalSessions: state.terminalSessions.map(s => ({ id: s.id, name: s.name })),
-      activeTerminalSessionId: state.activeTerminalSessionId,
       toolsPosition: state.toolsPosition,
-      aiModel: state.aiModel,
-      aiEndpointUrl: state.aiEndpointUrl,
-      aiEndpointId: state.aiEndpointId,
     }));
   } catch (_) { /* Persistence is optional (private browsing may reject it). */ }
 }
@@ -2195,29 +1414,12 @@ function restore() {
     if (TAB_SIZES.has(saved.tabSize)) state.tabSize = saved.tabSize;
     if (typeof saved.treeVisible === 'boolean') state.treeVisible = saved.treeVisible;
     if (typeof saved.toolsVisible === 'boolean') state.toolsVisible = saved.toolsVisible;
-    if (Number.isFinite(saved.previewWidth) && saved.previewWidth >= 300) state.previewWidth = saved.previewWidth;
-    if (saved.activePanel === 'terminal' || saved.activePanel === 'search' || saved.activePanel === 'ai') state.activePanel = saved.activePanel;
+    if (saved.activePanel === 'search') state.activePanel = saved.activePanel;
     if (saved.toolsPosition === 'bottom' || saved.toolsPosition === 'side') state.toolsPosition = saved.toolsPosition;
-    if (typeof saved.aiModel === 'string') state.aiModel = saved.aiModel;
-    if (typeof saved.aiEndpointUrl === 'string') state.aiEndpointUrl = saved.aiEndpointUrl;
-    if (typeof saved.aiEndpointId === 'string') state.aiEndpointId = saved.aiEndpointId;
-    if (Array.isArray(saved.terminalSessions)) {
-      state.terminalSessions = saved.terminalSessions.map(s => ({
-        id: s.id,
-        name: s.name,
-        terminal: null,
-        container: null
-      }));
-    } else {
-      state.terminalSessions = [];
-    }
-    if (saved.activeTerminalSessionId) {
-      state.activeTerminalSessionId = saved.activeTerminalSessionId;
-    } else {
-      state.activeTerminalSessionId = null;
-    }
     return Array.isArray(saved.openPaths)
-      ? saved.openPaths.map(p => p.startsWith('virtual://') ? p : isSafeRelativePath(p)).filter(Boolean).slice(0, 24)
+      ? saved.openPaths.map(p => p.startsWith('virtual://')
+          ? (p === 'virtual://ai' || p === 'virtual://terminal' ? null : p)
+          : isSafeRelativePath(p)).filter(Boolean).slice(0, 24)
       : [];
   } catch (_) {
     return [];
@@ -2240,7 +1442,6 @@ async function setActive(path, { line, column } = {}) {
   renderTabs();
   updateStatus(active.loading ? 'Loading…' : active.error ? 'Load failed' : '');
   updateAskAgentAction();
-  updatePreviewAction();
   persist();
   emit('active-document', { document: documentSnapshot(active) });
   if (Number.isInteger(line) && line > 0) {
@@ -2263,6 +1464,7 @@ async function readDocument(document) {
     document.savedContent = document.content;
     document.diskVersion = String(response.version || '');
     document.externalVersion = '';
+    document.externalMissing = false;
     document.dirty = false;
     document.loaded = true;
     document.languageName = document.content.length > MAX_LIVE_EDITOR_CHARS
@@ -2281,7 +1483,6 @@ async function readDocument(document) {
       renderTabs();
       updateStatus(document.error ? 'Load failed' : '');
       updateAskAgentAction();
-      updatePreviewAction();
     }
   }
 }
@@ -2312,7 +1513,6 @@ async function refreshExternallyChangedFile(path, projectId) {
         if (view && view.state !== document.state) view.setState(document.state);
         updateStatus('Updated from project');
         updateAskAgentAction();
-        void refreshPreviewForActiveDocument();
       }
       renderTabs();
       emit('external-file-refresh', { document: documentSnapshot(document) });
@@ -2328,7 +1528,9 @@ async function refreshExternallyChangedFile(path, projectId) {
 async function pollExternalProjectChanges() {
   if (state.externalPollInFlight || window.document.hidden || !state.context) return;
   const context = contextSnapshot();
-  const documents = [...state.documents.values()].filter(item => item.loaded && !item.loading);
+  const documents = [...state.documents.values()].filter(
+    item => item.loaded && !item.loading && !item.externalMissing,
+  );
   if (!documents.length) return;
   state.externalPollInFlight = true;
   try {
@@ -2346,9 +1548,18 @@ async function pollExternalProjectChanges() {
           continue;
         }
         await refreshExternallyChangedFile(editorDocument.path, context.projectId);
-      } catch (_) {
-        // A deleted or renamed file is handled when the user selects it again;
-        // background polling should never turn that into a noisy error loop.
+      } catch (error) {
+        // A renamed/deleted tab would otherwise generate a pair of 404s on
+        // every watcher tick forever. Preserve its already-loaded content, but
+        // retire it from background polling until the user opens it again.
+        if (error?.status === 404) {
+          editorDocument.externalMissing = true;
+          if (editorDocument.path === state.activePath) {
+            updateStatus('File was removed or renamed on disk');
+          }
+          notice(`${editorDocument.path} was removed or renamed on disk; keeping the open tab.`, 4200);
+        }
+        // Other transient errors are intentionally retried by the watcher.
       }
     }
   } finally {
@@ -2396,7 +1607,6 @@ export async function openAt(path, options = {}) {
   await setActive(safePath, options);
   if (!isVirtual) {
     await readDocument(document);
-    void refreshPreviewForActiveDocument();
     if (!document.error && Number.isInteger(options.line) && options.line > 0) goToPosition(options.line, options.column);
   }
   return !document.error;
@@ -2435,7 +1645,6 @@ async function saveDocument(document, { force = false } = {}) {
       renderTabs();
       if (document.path === state.activePath) {
         notice(document.dirty ? 'Saved; newer edits remain' : 'Saved');
-        if (!document.dirty) void refreshPreviewForActiveDocument();
       }
       persist();
       emit('saved', { document: documentSnapshot(document) });
@@ -2583,7 +1792,8 @@ export async function toggleVim() {
 export async function toggleFullscreen() {
   const root = state.root;
   if (!root) return false;
-  root.classList.toggle('code-editor-fullscreen');
+  if (root.classList.contains('code-editor-fullscreen')) enterWindowed();
+  else enterFullscreen();
   try {
     if (!document.fullscreenElement && root.requestFullscreen) await root.requestFullscreen();
     else if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
@@ -2613,10 +1823,12 @@ function showCommandPalette() {
   const commands = [
     ['Save active file', () => saveActiveFile()],
     ['Open project search', () => showPanel('search')],
-    ['Open terminal', () => showPanel('terminal')],
     ['Toggle files sidebar', () => toggleFileTree()],
     ['Toggle Vim mode', () => toggleVim()],
     ['Toggle fullscreen', () => toggleFullscreen()],
+    ['Dock left beside chat', () => toggleDock('left')],
+    ['Dock right beside chat', () => toggleDock('right')],
+    ['Minimize to dock', () => { Modals.minimize('code-editor-root'); }],
     ['Show keyboard shortcuts', () => showKeyboardHelp()],
   ];
   const render = () => {
@@ -2652,7 +1864,7 @@ function showKeyboardHelp() {
   dialog.style.cssText = 'position:absolute;inset:0;z-index:3;display:grid;place-items:center;background:rgb(0 0 0 / 55%);';
   const card = window.document.createElement('div');
   card.style.cssText = 'max-width:420px;padding:16px;border:1px solid var(--border);border-radius:8px;background:var(--panel);font-size:12px;';
-  card.innerHTML = '<strong>Editor shortcuts</strong><ul><li>Cmd/Ctrl+S — save</li><li>Cmd/Ctrl+Shift+F — project search</li><li>Cmd/Ctrl+J — terminal</li><li>Cmd/Ctrl+Alt+F/T — files / terminal</li><li>Cmd/Ctrl+Alt+P/W — preview / web view</li><li>Cmd/Ctrl+Alt+V/L — Vim / layout</li><li>Ctrl+Space / Alt+/ — AI Copilot completion</li><li>Cmd/Ctrl+Alt+A — ask agent about selected code</li><li>F12 / Alt+F12 — definition / references</li><li>F11 — fullscreen</li><li>Cmd/Ctrl+Shift+/ — this help</li><li>Vim on: i, Esc, h/j/k/l, dd, yy, p, u, /</li></ul>';
+  card.innerHTML = '<strong>Editor shortcuts</strong><ul><li>Cmd/Ctrl+S — save</li><li>Cmd/Ctrl+Shift+F / Cmd/Ctrl+J — project search</li><li>Cmd/Ctrl+Alt+F — files</li><li>Cmd/Ctrl+Alt+V/L — Vim / layout</li><li>Ctrl+Space / Alt+/ — AI Copilot completion</li><li>Cmd/Ctrl+Alt+A — ask agent about selected code</li><li>F12 / Alt+F12 — definition / references</li><li>F11 — fullscreen</li><li>Cmd/Ctrl+Shift+/ — this help</li><li>Vim on: i, Esc, h/j/k/l, dd, yy, p, u, /</li></ul>';
   const close = window.document.createElement('button');
   close.type = 'button'; close.className = 'code-editor-action-btn'; close.textContent = 'Close';
   close.addEventListener('click', () => dialog.remove());
@@ -2673,30 +1885,16 @@ export function getActiveDocument() {
 
 /** Request a project panel or return the reserved slot for a future extension. */
 export function requestPanel(name) {
-  if (!PANEL_NAMES.has(name)) throw new Error(`Unknown editor panel: ${name}`);
-  if (name === 'terminal' || name === 'search') return showPanel(name);
-  if (name === 'preview') return ensurePreviewPanel()?.element || null;
+  if (name === 'search') return showPanel(name);
   const slot = getRootPart(`[data-editor-panel-slot="${name}"]`);
   emit('panel-request', { panel: name, slot });
   return slot;
 }
 
 function teardownRoot() {
-  stopAiMirroring();
-  clearTimeout(state.previewTimer);
-  state.previewTimer = null;
   if (state.externalPollTimer) clearInterval(state.externalPollTimer);
   state.externalPollTimer = null;
   state.externalPollInFlight = false;
-  state.preview?.panel?.destroy();
-  state.preview = null;
-  state.terminalSessions.forEach(session => {
-    if (session.terminal) {
-      session.terminal.dispose();
-      session.terminal = null;
-    }
-    session.container = null;
-  });
   state.panels = null;
   state.tree?.destroy();
   state.tree = null;
@@ -2734,14 +1932,6 @@ export async function openEditor(projectOrId, legacyPath) {
     for (const document of state.documents.values()) {
       if (!await allowDiscard(document, 'Switch projects?')) return false;
     }
-    state.terminalSessions.forEach(session => {
-      if (session.terminal) {
-        try { session.terminal._send({ type: 'kill' }); } catch (_) {}
-        session.terminal.dispose();
-      }
-    });
-    state.terminalSessions = [];
-    state.activeTerminalSessionId = null;
     teardownRoot();
     state.documents.clear();
     state.activePath = null;
@@ -2755,11 +1945,14 @@ export async function openEditor(projectOrId, legacyPath) {
     state.tabSize = 2;
     state.treeVisible = true;
     state.toolsVisible = true;
-    state.previewWidth = null;
-    state.activePanel = 'terminal';
+    state.activePanel = 'search';
   }
   const root = mountRoot();
   root.style.display = 'flex';
+  wireWindow(root);
+  updateWindowBar();
+  if (window.innerWidth <= 768 || loadWindowPrefs().mode === 'fullscreen') enterFullscreen();
+  else enterWindowed();
   const restoredPaths = state.documents.size ? [] : restore();
   syncLayoutPreferences();
   mountPanels();
@@ -2803,7 +1996,18 @@ export async function openEditor(projectOrId, legacyPath) {
 export function initCodeEditor() {
   if (state.initialized) return;
   state.initialized = true;
-  installWebviewSnapshotBridge();
+  Modals.register('code-editor-root', {
+    label: 'Code',
+    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg>',
+    restoreFn: () => {
+      const root = document.getElementById('code-editor-root');
+      if (!root) return;
+      root.style.display = 'flex';
+      try { state.view?.focus(); } catch (_) {}
+      emit('opened', { project: state.context ? { ...state.context } : {} });
+    },
+    closeFn: () => { void closeEditor(); },
+  });
   document.addEventListener('open-editor', event => {
     const detail = event.detail || {};
     const filePath = isSafeRelativePath(detail.filePath);
@@ -2815,12 +2019,8 @@ export function initCodeEditor() {
     const detail = event.detail || {};
     void refreshExternallyChangedFile(detail.path, detail.projectId);
   });
-  document.addEventListener('aster:sessions-updated', () => {
-    renderAiSessionList();
-  });
-  document.addEventListener('session-switched', () => {
-    renderAiSessionList();
-    syncAiMessages();
+  window.addEventListener('astercaeser:modal-opened', () => {
+    if (state.root && state.root._ceLowerEditor) state.root._ceLowerEditor();
   });
 }
 

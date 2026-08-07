@@ -2334,7 +2334,17 @@ export function addMessage(role, content, modelName, metadata) {
             threadWrap = lastWrap;
           } else {
             threadWrap = document.createElement('div');
-            threadWrap.className = 'agent-thread';
+            threadWrap.className = 'agent-thread agent-thread--compact';
+            const summary = document.createElement('button');
+            summary.type = 'button';
+            summary.className = 'agent-thread-summary';
+            summary.textContent = `Completed: ${roundTools.length} step${roundTools.length === 1 ? '' : 's'}`;
+            summary.setAttribute('aria-expanded', 'false');
+            summary.addEventListener('click', () => {
+              const expanded = threadWrap.classList.toggle('agent-thread--expanded');
+              summary.setAttribute('aria-expanded', String(expanded));
+            });
+            threadWrap.appendChild(summary);
             // Extend line up if there's a chat bubble above
             if (txt) threadWrap.classList.add('has-top');
             box.appendChild(threadWrap);
@@ -2379,6 +2389,11 @@ export function addMessage(role, content, modelName, metadata) {
             node.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${ok ? '\u2713' : '\u2717'}</span><span class="agent-thread-tool">${esc(ev.tool)}</span><span class="agent-thread-status">${ok ? 'done' : 'failed'}</span><span class="agent-thread-chevron">\u25B6</span></div><div class="agent-thread-content">${evCmdHtml}${outHtml}${evDiffHtml}</div>`;
             // Click handling is delegated globally \u2014 see chat.js init.
             threadWrap.appendChild(node);
+          }
+          const threadSummary = threadWrap.querySelector(':scope > .agent-thread-summary');
+          if (threadSummary) {
+            const count = threadWrap.querySelectorAll('.agent-thread-node').length;
+            threadSummary.textContent = `Completed: ${count} step${count === 1 ? '' : 's'}`;
           }
           // Check if next round has text — extend line down to connect
           const nextTxt = (roundTexts[r + 1] || '').trim();

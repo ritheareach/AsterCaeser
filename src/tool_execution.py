@@ -15,6 +15,7 @@ import logging
 import os
 import pathlib
 import re
+import shlex
 import sys
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
@@ -37,6 +38,35 @@ from src.tool_utils import _truncate, get_mcp_manager
 # Using this as cwd and HOME prevents the agent from silently creating files
 # in ephemeral container layers that are lost on the next rebuild.
 _AGENT_WORKDIR = DATA_DIR
+
+
+def _project_id_for_session(session_id: Optional[str], owner: Optional[str]) -> Optional[str]:
+    """Return the owner-checked project scope for an agent tool invocation.
+
+    Project IDs are application-owned identifiers and should not be guessed by
+    the model.  Tool calls inherit the scope of the chat that made them.
+    """
+    if not session_id:
+        return None
+    try:
+        from core.database import Session as DbSession, SessionLocal
+
+        db = SessionLocal()
+        try:
+            session = db.query(DbSession).filter(DbSession.id == session_id).first()
+            if not session:
+                return None
+            if owner is not None and session.owner != owner:
+                return None
+            if owner is None and session.owner not in (None, "__system__"):
+                return None
+            project_id = getattr(session, "project_id", None)
+            return project_id.strip() if isinstance(project_id, str) and project_id.strip() else None
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("Unable to resolve project scope for task tool", exc_info=True)
+        return None
 
 
 
@@ -241,11 +271,109 @@ def _resolve_tool_path_in_workspace(workspace: str, raw_path: str) -> str:
 _active_workspace: contextvars.ContextVar = contextvars.ContextVar(
     "agent_active_workspace", default=None
 )
+_project_file_access: contextvars.ContextVar = contextvars.ContextVar(
+    "agent_project_file_access", default=False
+)
+
+# These tools remain safely confined by the active project workspace. They are
+# the only non-admin exception; shell/Python and every non-filesystem admin
+# capability stay privileged.
+_PROJECT_FILE_TOOLS = frozenset({
+    "read_file", "write_file", "edit_file", "grep", "glob", "ls", "get_workspace", "bash",
+})
 
 
 def get_active_workspace() -> Optional[str]:
     """The folder the agent is confined to this turn, or None."""
     return _active_workspace.get()
+
+
+def has_project_file_access() -> bool:
+    """Whether this invocation has owner-verified project file authority."""
+    return bool(_project_file_access.get() and get_active_workspace())
+
+
+_PROJECT_GIT_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+
+
+def _project_git_args(content: str) -> tuple[Optional[list[str]], Optional[str]]:
+    """Parse the small, safe Git command subset available to project chats.
+
+    Project users may commit and push their own project, but do not receive a
+    general shell. Parsing into argv and using ``create_subprocess_exec`` keeps
+    shell syntax, command chaining, and path escape tricks out of scope.
+    """
+    if not isinstance(content, str) or not content.strip() or "\n" in content.strip():
+        return None, "Project Git accepts one command at a time."
+    try:
+        args = shlex.split(content, posix=True)
+    except ValueError as exc:
+        return None, f"Invalid Git command: {exc}"
+    if len(args) < 2 or args[0] != "git":
+        return None, "Project shell access is limited to Git commands."
+
+    command, tail = args[1], args[2:]
+    read_only = {
+        "status": {(), ("--short",), ("--branch",), ("--short", "--branch"), ("--porcelain=v1",)},
+        "branch": {(), ("--show-current",)},
+        "diff": {(), ("--stat",), ("--cached",), ("--staged",), ("--name-only",)},
+        "remote": {("-v",)},
+        "rev-parse": {("--show-toplevel",)},
+        "log": {("--oneline",), ("--oneline", "-1"), ("--oneline", "-5"), ("--oneline", "-10")},
+    }
+    if command in read_only and tuple(tail) in read_only[command]:
+        return args, None
+    if command == "add" and tuple(tail) in {(".",), ("-A",), ("--all",)}:
+        return args, None
+    if command == "commit" and len(tail) == 2 and tail[0] == "-m" and tail[1].strip():
+        return args, None
+    if command == "switch" and len(tail) == 1:
+        branch = tail[0]
+        if _PROJECT_GIT_BRANCH_RE.fullmatch(branch) and ".." not in branch and "@{" not in branch:
+            return args, None
+    if command == "push":
+        if not tail:
+            return args, None
+        if len(tail) == 2 and tail[0] == "origin" and _PROJECT_GIT_BRANCH_RE.fullmatch(tail[1]):
+            return args, None
+        if len(tail) == 3 and tail[0] in {"-u", "--set-upstream"} and tail[1] == "origin" and _PROJECT_GIT_BRANCH_RE.fullmatch(tail[2]):
+            return args, None
+    return None, (
+        "Unsupported project Git command. Allowed: status, branch --show-current, diff, log, "
+        "add ./-A/--all, commit -m, switch <branch>, and push to origin."
+    )
+
+
+async def _execute_project_git(content: str) -> Dict:
+    """Execute an allowlisted Git argv in the owner-verified project root."""
+    args, error = _project_git_args(content)
+    if error:
+        return {"error": error, "exit_code": 1}
+    workspace = get_active_workspace()
+    if not workspace:
+        return {"error": "No verified project workspace is active.", "exit_code": 1}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=workspace,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.communicate()
+        except Exception:
+            pass
+        return {"error": "git: timed out after 45 seconds", "exit_code": 124}
+    except OSError as exc:
+        return {"error": f"git: {exc}", "exit_code": 1}
+    output = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+    if err:
+        output = f"{output}\nSTDERR: {err}".strip()
+    return {"output": _truncate(output or "(no output)", MAX_OUTPUT_CHARS), "exit_code": proc.returncode or 0}
 
 
 def vet_workspace(raw: str) -> Optional[str]:
@@ -628,6 +756,7 @@ async def execute_tool_block(
     owner: Optional[str] = None,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     workspace: Optional[str] = None,
+    project_file_access: bool = False,
     tool_policy: Optional[Any] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
@@ -637,6 +766,7 @@ async def execute_tool_block(
     way out so the binding never leaks to the next tool call.
     """
     token = _active_workspace.set(workspace or None)
+    access_token = _project_file_access.set(bool(project_file_access and workspace))
     try:
         output = await _execute_tool_block_impl(
             block,
@@ -648,6 +778,7 @@ async def execute_tool_block(
         )
         return output
     finally:
+        _project_file_access.reset(access_token)
         _active_workspace.reset(token)
 
 
@@ -753,7 +884,8 @@ async def _execute_tool_block_impl(
         logger.warning("Admin tool blocked for non-admin owner=%r tool=%s", owner, tool)
         return desc, result
 
-    if is_public_blocked_tool(tool) and not _owner_is_admin(owner):
+    project_file_tool_allowed = tool in _PROJECT_FILE_TOOLS and has_project_file_access()
+    if is_public_blocked_tool(tool) and not _owner_is_admin(owner) and not project_file_tool_allowed:
         desc = f"{tool}: BLOCKED"
         result = {
             "error": (
@@ -765,6 +897,20 @@ async def _execute_tool_block_impl(
         logger.warning("Public tool policy blocked owner=%r tool=%s", owner, tool)
         return desc, result
 
+    # A project-scoped chat can use the shell surface solely for an allowlisted
+    # Git workflow.  This rule intentionally applies to *every* project user,
+    # including the workspace owner/admin: project scope is a capability
+    # boundary, not a weaker version of the global-admin shell.  Without this
+    # branch an owner account falls through to the unrestricted BashTool, where
+    # a chained command can block an agent turn for its full timeout and leave
+    # the chat with no visible reply.
+    #
+    # Keep this before background/MCP bash dispatch, where the generic BashTool
+    # would otherwise execute the supplied text.
+    if tool == "bash" and has_project_file_access():
+        desc = f"project git: {content.split(chr(10))[0][:80]}"
+        result = await _execute_project_git(content)
+        return desc, result
 
     # Background execution: a `bash` block whose first line is the `#!bg`
     # marker runs DETACHED — returns a job id immediately so the chat stream
@@ -844,7 +990,11 @@ async def _execute_tool_block_impl(
         desc, result = await dispatch_ai_tool(tool, content, session_id, owner=owner)
     elif tool == "manage_tasks":
         desc = "manage_tasks"
-        result = await do_manage_tasks(content, owner=owner)
+        result = await do_manage_tasks(
+            content,
+            owner=owner,
+            project_id=_project_id_for_session(session_id, owner),
+        )
     elif tool == "manage_skills":
         desc = "manage_skills"
         result = await do_manage_skills(content, owner=owner)

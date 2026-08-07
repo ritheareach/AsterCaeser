@@ -283,3 +283,20 @@
 .xterm .xterm-scrollable-element > .shadow.top.left {
 	box-shadow: var(--vscode-scrollbar-shadow, #000) 6px 0 6px -6px inset;
 }
+
+/* Slim the terminal's custom VSCode-style scrollbar (default ~14px, always
+   visible). The component sets the width inline, so !important is required. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+    width: 8px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+    width: 8px !important;
+    border-radius: 4px;
+}
+.xterm .xterm-scrollable-element > .scrollbar.horizontal {
+    height: 8px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.horizontal > .slider {
+    height: 8px !important;
+    border-radius: 4px;
+}

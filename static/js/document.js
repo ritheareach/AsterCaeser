@@ -1149,6 +1149,7 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
     if (!pane || !activeDocId) return;
     _wirePdfPaneProximity(pane);
     const docId = activeDocId;
+    pane.classList.remove('doc-pdf-view--native');
     // Keep the save pill across re-renders by detaching/re-attaching it
     const savedPill = document.getElementById('doc-pdf-save-pill');
     pane.innerHTML = '<div style="color:#bbb;font-size:13px;text-align:center;padding:40px;">Loading PDF…</div>';
@@ -1159,7 +1160,18 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
       if (!res.ok) throw new Error(await _pdfResponseErrorMessage(res));
       data = await res.json();
     } catch (e) {
-      pane.innerHTML = `<div style="color:#fbb;padding:40px;text-align:center;">Failed to load PDF view: ${_escHtml(e.message || String(e))}</div>`;
+      const message = e.message || String(e);
+      if (/PDF viewer requires PyMuPDF/i.test(message)) {
+        const sourceUrl = `${API_BASE}/api/document/${encodeURIComponent(docId)}/source-pdf`;
+        pane.classList.add('doc-pdf-view--native');
+        pane.innerHTML = `<section class="doc-pdf-fallback" aria-label="PDF preview fallback">
+          <div class="doc-pdf-fallback-notice"><strong>View only</strong><span>Interactive PDF editing is unavailable.</span><button type="button" class="doc-pdf-fallback-open">Open in new tab</button></div>
+          <iframe class="doc-pdf-fallback-frame" title="PDF preview" src="${sourceUrl}"></iframe>
+        </section>`;
+        pane.querySelector('.doc-pdf-fallback-open')?.addEventListener('click', () => window.open(sourceUrl, '_blank', 'noopener'));
+      } else {
+        pane.innerHTML = `<div class="doc-pdf-view-error">Failed to load PDF view: ${_escHtml(message)}</div>`;
+      }
       if (savedPill) pane.appendChild(savedPill);
       return;
     }
@@ -6756,32 +6768,71 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 
   /** Divider drag to resize the editor pane */
   function initDividerDrag(divider, pane, isRight) {
+    // swapSide() can rewire this same divider. Abort the prior listeners so a
+    // drag is never handled twice with conflicting left/right calculations.
+    divider._resizeAbort?.abort();
+    const controller = new AbortController();
+    divider._resizeAbort = controller;
+
     let dragging = false;
-    divider.addEventListener('mousedown', (e) => {
+    let frame = 0;
+    let pendingX = null;
+    let fixedEdge = 0;
+    let maxWidth = 0;
+
+    const applyWidth = (clientX) => {
+      // The pane's outside edge stays fixed; calculate against its actual
+      // geometry, not window.innerWidth. This remains correct with sidebars,
+      // docks, and browser viewport changes.
+      const width = isRight ? clientX - fixedEdge : fixedEdge - clientX;
+      pane.style.width = Math.max(250, Math.min(width, maxWidth)) + 'px';
+      pane.style.flex = 'none';
+    };
+    const queueWidth = (clientX) => {
+      pendingX = clientX;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (dragging && pendingX !== null) applyWidth(pendingX);
+        pendingX = null;
+      });
+    };
+    const finish = () => {
+      if (!dragging) return;
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      if (pendingX !== null) applyWidth(pendingX);
+      pendingX = null;
+      dragging = false;
+      divider.classList.remove('doc-divider-dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // Re-sync highlighting and line numbers once, after the final size.
+      syncHighlighting();
+      const ta = document.getElementById('doc-editor-textarea');
+      if (ta) updateLineNumbers(ta.value);
+    };
+
+    divider.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.target.closest?.('button')) return;
+      const rect = pane.getBoundingClientRect();
+      fixedEdge = isRight ? rect.left : rect.right;
+      maxWidth = Math.max(250, Math.min(window.innerWidth * 0.7, rect.width + (isRight ? rect.left : window.innerWidth - rect.right)));
       dragging = true;
+      divider.classList.add('doc-divider-dragging');
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
+      try { divider.setPointerCapture(e.pointerId); } catch (_) {}
       e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      const width = isRight
-        ? e.clientX
-        : window.innerWidth - e.clientX;
-      pane.style.width = Math.max(250, Math.min(width, window.innerWidth * 0.7)) + 'px';
-      pane.style.flex = 'none';
-    });
-    document.addEventListener('mouseup', () => {
-      if (dragging) {
-        dragging = false;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        // Re-sync highlighting and line numbers after resize
-        syncHighlighting();
-        const ta = document.getElementById('doc-editor-textarea');
-        if (ta) updateLineNumbers(ta.value);
-      }
-    });
+    }, { signal: controller.signal });
+    divider.addEventListener('pointermove', (e) => {
+      if (dragging) queueWidth(e.clientX);
+    }, { signal: controller.signal });
+    divider.addEventListener('pointerup', finish, { signal: controller.signal });
+    divider.addEventListener('pointercancel', finish, { signal: controller.signal });
+    divider.addEventListener('lostpointercapture', finish, { signal: controller.signal });
   }
 
   /** Close the editor panel */

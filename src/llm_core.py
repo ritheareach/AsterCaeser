@@ -1010,6 +1010,8 @@ def _provider_label(url: str) -> str:
     if _host_match(url, "groq.com"): return "Groq"
     from src.chatgpt_subscription import is_chatgpt_subscription_base
     if is_chatgpt_subscription_base(url): return "ChatGPT Subscription"
+    from src.antigravity_subscription import is_antigravity_subscription_base
+    if is_antigravity_subscription_base(url): return "Antigravity Subscription"
     from src.copilot import is_copilot_base
     if is_copilot_base(url): return "GitHub Copilot"
     if _host_match(url, "cerebras.ai"):

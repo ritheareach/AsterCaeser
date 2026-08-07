@@ -44,11 +44,60 @@ async function api(context, suffix, body) {
   });
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
+    let data = null;
     try {
-      const data = await response.json();
+      data = await response.json();
       message = data.detail || data.message || message;
     } catch (_) { /* Non-JSON errors still have a useful status. */ }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.detail = data;
+    throw error;
+  }
+  return response.json();
+}
+
+async function apiDelete(context, suffix, body) {
+  const response = await fetch(apiPath(context, suffix), {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    try {
+      const data = await response.json();
+      message = data.detail?.message || data.detail || data.message || message;
+    } catch (_) { /* Keep the HTTP status for non-JSON failures. */ }
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
+async function uploadFiles(context, directory, files, overwrite = false) {
+  const form = new FormData();
+  form.append('directory', directory || '');
+  form.append('overwrite', overwrite ? 'true' : 'false');
+  files.forEach(file => form.append('files', file, file.name));
+  const response = await fetch(apiPath(context, 'upload'), {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form,
+  });
+  if (!response.ok) {
+    let message = `Upload failed (${response.status})`;
+    let detail = null;
+    try {
+      detail = await response.json();
+      message = detail.detail?.message || detail.detail || detail.message || message;
+    } catch (_) { /* Keep the status message for non-JSON failures. */ }
+    const error = new Error(message);
+    error.status = response.status;
+    error.detail = detail?.detail || detail;
+    throw error;
   }
   return response.json();
 }
@@ -117,8 +166,17 @@ export class FileTree {
     this.cache = new Map();
     this.ignore = ignoreMatcher('');
     this.destroyed = false;
+    this._dragDepth = 0;
     this._onContextMenu = this._onContextMenu.bind(this);
+    this._onDragEnter = this._onDragEnter.bind(this);
+    this._onDragOver = this._onDragOver.bind(this);
+    this._onDragLeave = this._onDragLeave.bind(this);
+    this._onDrop = this._onDrop.bind(this);
     this.container.addEventListener('contextmenu', this._onContextMenu);
+    this.container.addEventListener('dragenter', this._onDragEnter);
+    this.container.addEventListener('dragover', this._onDragOver);
+    this.container.addEventListener('dragleave', this._onDragLeave);
+    this.container.addEventListener('drop', this._onDrop);
   }
 
   async mount() {
@@ -141,7 +199,69 @@ export class FileTree {
   destroy() {
     this.destroyed = true;
     this.container.removeEventListener('contextmenu', this._onContextMenu);
+    this.container.removeEventListener('dragenter', this._onDragEnter);
+    this.container.removeEventListener('dragover', this._onDragOver);
+    this.container.removeEventListener('dragleave', this._onDragLeave);
+    this.container.removeEventListener('drop', this._onDrop);
     document.querySelector('.file-tree-context-menu')?.remove();
+  }
+
+  _dropDirectory(event) {
+    const directory = event.target.closest('.file-tree-dir');
+    return directory && this.container.contains(directory) ? directory.dataset.path : '';
+  }
+
+  _setDropState(event, active) {
+    const directory = event?.target?.closest?.('.file-tree-dir');
+    this.container.classList.toggle('file-tree-drag-over', active);
+    this.container.querySelectorAll('.file-tree-item.drop-target').forEach(item => item.classList.remove('drop-target'));
+    if (active && directory && this.container.contains(directory)) directory.classList.add('drop-target');
+  }
+
+  _onDragEnter(event) {
+    if (!event.dataTransfer?.types?.includes('Files')) return;
+    event.preventDefault();
+    this._dragDepth += 1;
+    this._setDropState(event, true);
+  }
+
+  _onDragOver(event) {
+    if (!event.dataTransfer?.types?.includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    this._setDropState(event, true);
+  }
+
+  _onDragLeave(event) {
+    if (!event.dataTransfer?.types?.includes('Files')) return;
+    this._dragDepth = Math.max(0, this._dragDepth - 1);
+    if (!this._dragDepth) this._setDropState(event, false);
+  }
+
+  async _onDrop(event) {
+    if (!event.dataTransfer?.files?.length) return;
+    event.preventDefault();
+    const directory = this._dropDirectory(event);
+    this._dragDepth = 0;
+    this._setDropState(event, false);
+    const files = [...event.dataTransfer.files];
+    try {
+      let result;
+      try {
+        result = await uploadFiles(this.context, directory, files);
+      } catch (error) {
+        if (error.status !== 409) throw error;
+        const detail = error.detail || {};
+        const conflicts = Array.isArray(detail.files) ? detail.files.join(', ') : 'one or more files';
+        if (!window.confirm(`${conflicts} already exist in this project. Replace them?`)) return;
+        result = await uploadFiles(this.context, directory, files, true);
+      }
+      await this.refresh();
+      const uploaded = result.uploaded || [];
+      uiModule.showToast?.(`${uploaded.length} file${uploaded.length === 1 ? '' : 's'} added to ${directory || 'project root'}.`, 2400);
+    } catch (error) {
+      uiModule.showError?.(`Could not add files: ${error.message}`);
+    }
   }
 
   async _loadIgnoreFile() {
@@ -163,8 +283,9 @@ export class FileTree {
         name: String(entry.name || ''),
         path: joinPath(key, entry.name),
         type: entry.type === 'dir' ? 'dir' : 'file',
+        ignored: this.ignore(entry.path, entry.type === 'dir'),
       }))
-      .filter(entry => entry.path && !this.ignore(entry.path, entry.type === 'dir'))
+      .filter(entry => entry.path)
       .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
     this.cache.set(key, entries);
     return entries;
@@ -206,11 +327,11 @@ export class FileTree {
   _renderEntries(list, entries, depth) {
     for (const entry of entries) {
       const row = document.createElement('li');
-      row.className = `file-tree-item file-tree-${entry.type}`;
+      row.className = `file-tree-item file-tree-${entry.type}${entry.ignored ? ' ignored' : ''}`;
       row.dataset.path = entry.path;
       row.dataset.type = entry.type;
       row.style.paddingLeft = `${depth * 16 + 4}px`;
-      row.setAttribute('title', entry.path);
+      row.setAttribute('title', entry.ignored ? `${entry.path} (ignored by .gitignore)` : entry.path);
 
       const arrow = document.createElement('span');
       arrow.className = 'file-tree-arrow';
@@ -239,6 +360,26 @@ export class FileTree {
         list.appendChild(children);
       }
     }
+  }
+
+  async expandAll() {
+    const pending = [...(this.cache.get('') || [])]
+      .filter(entry => entry.type === 'dir')
+      .map(entry => entry.path);
+    while (pending.length) {
+      const path = pending.shift();
+      await this._load(path);
+      this.expanded.add(path);
+      for (const entry of this.cache.get(path) || []) {
+        if (entry.type === 'dir') pending.push(entry.path);
+      }
+    }
+    this._render();
+  }
+
+  collapseAll() {
+    this.expanded.clear();
+    this._render();
   }
 
   _open(path, row) {
@@ -316,7 +457,7 @@ export class FileTree {
   async _delete(path) {
     if (!window.confirm(`Delete ${path}? This cannot be undone.`)) return;
     try {
-      await api(this.context, 'delete', { path });
+      await apiDelete(this.context, 'delete', { path });
       await this.refresh();
     } catch (error) {
       uiModule.showError?.(`Could not delete ${path}: ${error.message}`);

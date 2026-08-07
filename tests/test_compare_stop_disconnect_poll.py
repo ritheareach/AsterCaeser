@@ -131,6 +131,10 @@ async def test_stop_cancels_detached_run_and_saves_partial_exactly_once():
     received = []
     sub = agent_runs.subscribe(session_id)
     async for ev in sub:
+        # subscribe() begins with an SSE keep-alive comment so proxies flush
+        # the connection immediately.  It is not an agent chunk.
+        if not ev.startswith("data:"):
+            continue
         received.append(ev)
         if len(received) >= 2:
             break
